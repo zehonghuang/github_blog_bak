@@ -92,4 +92,18 @@ void createEntry(int hash, K key, V value, int bucketIndex) {
 protected boolean removeEldestEntry(Map.Entry<K,V> eldest) {
   return false;
 }
+
+//判断value是否存在显然方便好多，直接遍历双链表
+public boolean containsValue(Object value) {
+  if (value==null) {
+      for (Entry e = header.after; e != header; e = e.after)
+          if (e.value==null)
+              return true;
+  } else {
+      for (Entry e = header.after; e != header; e = e.after)
+          if (value.equals(e.value))
+              return true;
+  }
+  return false;
+}
 ```
