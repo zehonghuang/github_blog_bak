@@ -1,11 +1,11 @@
 ---
-title: 浅谈Java集合框架-来看看LinkHashMap是啥!
+title: 浅谈Java集合框架-来看看LinkedHashMap是啥!
 date: 2016-10-03 01:55:32
 categories:
 - 集合框架
 tags:
 - java
-- LinkHashMap
+- LinkedHashMap
 ---
 
 跳槽后，就没怎么看jdk，趁着十一看回点集合框架。我们知道HashMap是无序的，jdk也给我们提供了算是有序的HashMap，即LinkedHashMap。然而它只保留了操作的相对有序，而非TreeMap的Key自然有序。
