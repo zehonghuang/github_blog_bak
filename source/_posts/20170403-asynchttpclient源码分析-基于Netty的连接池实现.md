@@ -17,6 +17,12 @@ categories:
 
 由于是基Netty的实现的，所以连接池实际上就是对channel的管理控制，有趣的是整个管理只用到了信号量+一个定时检测器，略微复杂的也就定时检测的逻辑，其实现方式简单且很好理解，不像httpclient里各种队列各种信号量难以理解。
 
+[来个demo先！](#demo)
+
+[来个demo先！](#Config)
+
+- ### <span id='demo' color=#0099ff>来个demo先！</span>
+
 先上一个简单的例子，事实上使用起来也不复杂。
 ``` java
 public class HttpTest {
@@ -51,6 +57,8 @@ public class HttpTest {
     }
 }
 ```
+
+- ### <span id='Config' color=#0099ff>了解基本参数</span>
 
 先看看`DefaultAsyncHttpClientConfig`类的配置参数，这里只列出本文所需要的参数。有一点值得提一下，如果想了解Java怎么像clojure或者scala一样创建不可变对象，可以看看这个类的写法。
 ``` java
@@ -510,6 +518,32 @@ public class NettyChannelConnector {
               connectListener.onFailure(null, e);
           }
       }
+  }
+
+  private void connect0(Bootstrap bootstrap, final NettyConnectListener<?> connectListener, InetSocketAddress remoteAddress) {
+      bootstrap.connect(remoteAddress, localAddress)//
+              .addListener(new SimpleChannelFutureListener() {
+                  @Override
+                  public void onSuccess(Channel channel) {
+                      if (asyncHandlerExtensions != null) {
+                          asyncHandlerExtensions.onTcpConnectSuccess(remoteAddress, channel);
+                      }
+                      if (connectionTtlEnabled) {
+                          Channels.initChannelId(channel);
+                      }
+                      connectListener.onSuccess(channel, remoteAddress);
+                  }
+                  @Override
+                  public void onFailure(Channel channel, Throwable t) {
+                      if (asyncHandlerExtensions != null)
+                          asyncHandlerExtensions.onTcpConnectFailure(remoteAddress, t);
+                      boolean retry = pickNextRemoteAddress();
+                      if (retry)
+                          NettyChannelConnector.this.connect(bootstrap, connectListener);
+                      else
+                          connectListener.onFailure(channel, t);
+                  }
+              });
   }
 }
 ```
