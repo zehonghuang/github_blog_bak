@@ -286,15 +286,21 @@ public final class NettyRequestSender {
 ``` java
 private Bootstrap newBootstrap(ChannelFactory<? extends Channel> channelFactory, EventLoopGroup eventLoopGroup, AsyncHttpClientConfig config) {
     @SuppressWarnings("deprecation")
-    Bootstrap bootstrap = new Bootstrap().channelFactory(channelFactory).group(eventLoopGroup)//
-            .option(ChannelOption.ALLOCATOR, config.getAllocator() != null ? config.getAllocator() : ByteBufAllocator.DEFAULT)//
-            .option(ChannelOption.TCP_NODELAY, config.isTcpNoDelay())//
+    Bootstrap bootstrap = new Bootstrap().channelFactory(channelFactory)
+            //客户端只有worker线程池，ServerBootstrap则需要boss和worker
+            .group(eventLoopGroup)
+            //设置内存分配器，我的理解是关于堆内存模型的，可用于对Netty的优化
+            .option(ChannelOption.ALLOCATOR, config.getAllocator() != null ? config.getAllocator() : ByteBufAllocator.DEFAULT)
+            //是否使用tcp的Nagle算法，文件传输可以选择使用
+            .option(ChannelOption.TCP_NODELAY, config.isTcpNoDelay())
+            //重复使用本地地址端口
             .option(ChannelOption.SO_REUSEADDR, config.isSoReuseAddress())//
             .option(ChannelOption.AUTO_CLOSE, false);
     if (config.getConnectTimeout() > 0) {
         bootstrap.option(ChannelOption.CONNECT_TIMEOUT_MILLIS, config.getConnectTimeout());
     }
     if (config.getSoLinger() >= 0) {
+        //就是一个设置延迟关闭时间的参数，用于保证数据发送完成
         bootstrap.option(ChannelOption.SO_LINGER, config.getSoLinger());
     }
     if (config.getSoSndBuf() >= 0) {
