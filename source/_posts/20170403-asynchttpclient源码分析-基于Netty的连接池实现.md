@@ -21,7 +21,7 @@ categories:
 
 [来个demo先！](#Config)
 
-- ### <span id='demo' color=#0099ff>来个demo先！</span>
+- ### <a name='demo' color=#0099ff>来个demo先！</a>
 
 先上一个简单的例子，事实上使用起来也不复杂。
 ``` java
@@ -58,7 +58,7 @@ public class HttpTest {
 }
 ```
 
-- ### <span id='Config' color=#0099ff>了解基本参数</span>
+- ### <a name='Config' color=#0099ff>了解基本参数</a>
 
 先看看`DefaultAsyncHttpClientConfig`类的配置参数，这里只列出本文所需要的参数。有一点值得提一下，如果想了解Java怎么像clojure或者scala一样创建不可变对象，可以看看这个类的写法。
 ``` java
