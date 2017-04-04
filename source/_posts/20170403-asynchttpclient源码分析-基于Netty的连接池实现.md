@@ -13,11 +13,15 @@ categories:
 
 ---
 
-这里暂且仅关注连接池的实现，部分涉及ahc的请求过程，以及Netty的channel输入输出处理、哈希轮定时器算法、事件轮询方式的区别，又或者信号量的使用等等，以后有机会会拿出来单独详解。
+这里暂且仅关注连接池的实现，部分涉及Netty的channel输入输出处理、哈希轮定时器算法、事件轮询方式的区别，又或者信号量的使用等等，以后有机会会单独拿出来详解。
 
+由于是基Netty的实现的，所以连接池实际上就是对channel的管理控制，有趣的是整个管理只用到了信号量+一个定时检测器，略微复杂的也就定时检测的逻辑，其实现方式简单且很好理解，不像httpclient里各种队列各种信号量难以理解。
+
+先上一个简单的例子，事实上使用起来也不复杂。
 ``` java
 public class HttpTest {
     static AsyncHttpClient asyncHttpClient = Dsl
+            //实例化所有池和检测器
             .asyncHttpClient(
                     Dsl.config()
                     .setMaxConnections(500)
@@ -38,6 +42,7 @@ public class HttpTest {
 //                .setSingleHeaders(singleHeaders)
 //                .setBodyParts(parts)
                 .addQueryParams(params)
+                //这里进入发送请求阶段
                 .execute()
                 .toCompletableFuture()
                 //超时报错，或请求异常，做容错处理，抛出一个Response
@@ -49,6 +54,7 @@ public class HttpTest {
 }
 ```
 
+先看看`DefaultAsyncHttpClientConfig`类的配置参数，这里只列出本文所需要的参数。有一点值得提一下，如果想了解Java怎么像clojure或者scala一样创建不可变对象，可以看看这个类的写法。
 ``` java
 // timeouts
 //连接超时
@@ -102,7 +108,7 @@ private final ResponseBodyPartFactory responseBodyPartFactory;
 private final int ioThreadsCount;
 ```
 
-
+就从这里开始，开头主要实例化`ChannelManager`和`NettyRequestSender`以及`Timer`三个重要组件，`NettyRequestSender`用于发送请求以及向`ChannelManager`索取channel使用权，`Timer`则负责另外两个组件给他的检测任务。
 ``` java
 public final class Dsl {
   public static AsyncHttpClient asyncHttpClient(DefaultAsyncHttpClientConfig.Builder configBuilder) {
@@ -131,7 +137,7 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
     allowStopNettyTimer = config.getNettyTimer() == null;
     //默认使用HashedWheelTimer
     nettyTimer = allowStopNettyTimer ? newNettyTimer() :config.getNettyTimer();
-
+    //下面两个是重点！！！
     channelManager = new ChannelManager(config, nettyTimer);
     requestSender = new NettyRequestSender(config, channelManager,nettyTimer, new AsyncHttpClientState(closed));
     //给Bootstraps配置解析器，以及处理接收服务端发送的消息的处理器
@@ -145,6 +151,7 @@ public class DefaultAsyncHttpClient implements AsyncHttpClient {
 }
 ```
 
+这里是重中之重，网络配置、连接池、IO线程池、轮询方式都是在这儿产生的。
 ``` java
 public class ChannelManager {
   private final AsyncHttpClientConfig config;
@@ -176,7 +183,7 @@ public class ChannelManager {
 
     this.config = config;
     //忽略一小段关于ssl的
-
+    //ChannelPool是用于检测已经实例化的channel的健康状况，如果不合格会直接close掉
     ChannelPool channelPool = config.getChannelPool();
     if (channelPool == null) {
         if (config.isKeepAlive()) {
@@ -196,13 +203,15 @@ public class ChannelManager {
     if (maxTotalConnectionsEnabled || maxConnectionsPerHostEnabled) {
         //管理已经被实例化的channel
         openChannels = new DefaultChannelGroup("asyncHttpClient", GlobalEventExecutor.INSTANCE) {
-            //重载删除方法，因为删除channel时，需要是否信号量
+            //重载删除方法，因为删除channel时，需要释放信号量
             @Override
             public boolean remove(Object o) {
                 boolean removed = super.remove(o);
                 if (removed) {
+                    //释放总连接池的信号量
                     if (maxTotalConnectionsEnabled)
                         freeChannels.release();
+                    //释放路由连接池的信号量
                     if (maxConnectionsPerHostEnabled) {
                         Object partitionKey = channelId2PartitionKey.remove(Channel.class.cast(o));
                         if (partitionKey != null) {
@@ -224,11 +233,11 @@ public class ChannelManager {
 
     handshakeTimeout = config.getHandshakeTimeout();
 
-    // check if external EventLoopGroup is defined
     ThreadFactory threadFactory = config.getThreadFactory() != null ? config.getThreadFactory() : new DefaultThreadFactory(config.getThreadPoolName());
     allowReleaseEventLoopGroup = config.getEventLoopGroup() == null;
     ChannelFactory<? extends Channel> channelFactory;
     if (allowReleaseEventLoopGroup) {
+        //这个只能在linux下使用
         if (config.isUseNativeTransport()) {
             eventLoopGroup = newEpollEventLoopGroup(config.getIoThreadsCount(), threadFactory);
             channelFactory = getEpollSocketChannelFactory();
@@ -239,27 +248,41 @@ public class ChannelManager {
             channelFactory = NioSocketChannelFactory.INSTANCE;
         }
     } else {
-        eventLoopGroup = config.getEventLoopGroup();
-        if (eventLoopGroup instanceof OioEventLoopGroup)
-            throw new IllegalArgumentException("Oio is not supported");
-        if (eventLoopGroup instanceof NioEventLoopGroup) {
-            channelFactory = NioSocketChannelFactory.INSTANCE;
-        } else {
-            channelFactory = getEpollSocketChannelFactory();
-        }
+        //...
     }
     //用于http请求的bootstrap
     httpBootstrap = newBootstrap(channelFactory, eventLoopGroup, config);
     //用于WebSocket请求的bootstrap
     wsBootstrap = newBootstrap(channelFactory, eventLoopGroup, config);
 
-    // for reactive streams
     httpBootstrap.option(ChannelOption.AUTO_READ, false);
   }
 }
 ```
 
-对于用Netty实现网络客户端来说，这个配置很有参考价值，所以也贴上来一起观赏！
+实例化完`ChannelManager`后，就轮到请求发送器，这里先看看所需要的参数，具体执行的方法在后面说。
+``` java
+public final class NettyRequestSender {
+  private final AsyncHttpClientConfig config;
+  private final ChannelManager channelManager;
+  private final Timer nettyTimer;
+  private final AsyncHttpClientState clientState;
+  private final NettyRequestFactory requestFactory;
+
+  public NettyRequestSender(AsyncHttpClientConfig config,//
+            ChannelManager channelManager,//
+            Timer nettyTimer,//
+            AsyncHttpClientState clientState) {
+      this.config = config;
+      this.channelManager = channelManager;
+      this.nettyTimer = nettyTimer;
+      this.clientState = clientState;
+      requestFactory = new NettyRequestFactory(config);
+  }
+}
+```
+
+再回来看看`ChannelManager`构造方法中使用的工厂方法`newBootstrap(channelFactory, eventLoopGroup, config)`，这是支持整个ahc运作的代码，对于用Netty实现网络客户端来说，这个配置很有参考价值，所以也贴上来一起观赏！
 ``` java
 private Bootstrap newBootstrap(ChannelFactory<? extends Channel> channelFactory, EventLoopGroup eventLoopGroup, AsyncHttpClientConfig config) {
     @SuppressWarnings("deprecation")
@@ -280,9 +303,45 @@ private Bootstrap newBootstrap(ChannelFactory<? extends Channel> channelFactory,
     if (config.getSoRcvBuf() >= 0) {
         bootstrap.option(ChannelOption.SO_RCVBUF, config.getSoRcvBuf());
     }
+    //自定义配置
     for (Entry<ChannelOption<Object>, Object> entry : config.getChannelOptions().entrySet()) {
         bootstrap.option(entry.getKey(), entry.getValue());
     }
     return bootstrap;
+}
+```
+
+``` java
+public void configureBootstraps(NettyRequestSender requestSender) {
+    final AsyncHttpClientHandler httpHandler = new HttpHandler(config, this, requestSender);
+    wsHandler = new WebSocketHandler(config, this, requestSender);
+    final NoopHandler pinnedEntry = new NoopHandler();
+    final LoggingHandler loggingHandler = new LoggingHandler(LogLevel.TRACE);
+
+    httpBootstrap.handler(new ChannelInitializer<Channel>() {
+        @Override
+        protected void initChannel(Channel ch) throws Exception {
+            ChannelPipeline pipeline = ch.pipeline()//
+                    .addLast(PINNED_ENTRY, pinnedEntry)//
+                    .addLast(HTTP_CLIENT_CODEC, newHttpClientCodec())//
+                    .addLast(INFLATER_HANDLER, newHttpContentDecompressor())//
+                    .addLast(CHUNKED_WRITER_HANDLER, new ChunkedWriteHandler())//
+                    .addLast(AHC_HTTP_HANDLER, httpHandler);
+            if (config.getHttpAdditionalChannelInitializer() != null)
+                config.getHttpAdditionalChannelInitializer().initChannel(ch);
+        }
+    });
+
+    wsBootstrap.handler(new ChannelInitializer<Channel>() {
+        @Override
+        protected void initChannel(Channel ch) throws Exception {
+            ChannelPipeline pipeline = ch.pipeline()//
+                    .addLast(PINNED_ENTRY, pinnedEntry)//
+                    .addLast(HTTP_CLIENT_CODEC, newHttpClientCodec())//
+                    .addLast(AHC_WS_HANDLER, wsHandler);
+            if (config.getWsAdditionalChannelInitializer() != null)
+                config.getWsAdditionalChannelInitializer().initChannel(ch);
+        }
+    });
 }
 ```
