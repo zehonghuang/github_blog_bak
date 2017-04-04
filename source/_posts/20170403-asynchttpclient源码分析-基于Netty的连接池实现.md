@@ -1,5 +1,5 @@
 ---
-title: 20170403-asynchttpclient源码分析-基于Netty的连接池实现
+title: asynchttpclient源码分析-基于Netty的连接池实现
 date: 2017-04-03 17:53:18
 tags:
   - Netty
@@ -39,8 +39,6 @@ public class HttpTest {
 
         asyncHttpClient
                 .prepareGet("http://fanyi.youdao.com/openapi.do")
-//                .setSingleHeaders(singleHeaders)
-//                .setBodyParts(parts)
                 .addQueryParams(params)
                 //这里进入发送请求阶段
                 .execute()
@@ -61,7 +59,7 @@ public class HttpTest {
 private final int connectTimeout;
 //请求超时
 private final int requestTimeout;
-//读取超时
+//读取超时，含于请求时间
 private final int readTimeout;
 //关闭Client前的静默时间
 private final int shutdownQuietPeriod;
@@ -315,14 +313,14 @@ private Bootstrap newBootstrap(ChannelFactory<? extends Channel> channelFactory,
     }
     return bootstrap;
 }
-```
 
-``` java
+//下面则是管道的配置
 public void configureBootstraps(NettyRequestSender requestSender) {
+    //ahc自定义的ChannelInboundHandler，异步方式获取服务端返回的数据
+    //我们自己获取数据后的核心业务逻辑，也在这里开始
     final AsyncHttpClientHandler httpHandler = new HttpHandler(config, this, requestSender);
     wsHandler = new WebSocketHandler(config, this, requestSender);
     final NoopHandler pinnedEntry = new NoopHandler();
-    final LoggingHandler loggingHandler = new LoggingHandler(LogLevel.TRACE);
 
     httpBootstrap.handler(new ChannelInitializer<Channel>() {
         @Override
@@ -349,5 +347,169 @@ public void configureBootstraps(NettyRequestSender requestSender) {
                 config.getWsAdditionalChannelInitializer().initChannel(ch);
         }
     });
+}
+```
+
+一切工作准备就绪，现在可以请求了！怎么构建请求就不打算讲了，可以自行阅读`RequestBuilderBase`类。执行`execute()`方法，正式开始请求，往下看`DefaultAsyncHttpClient.executeRequest()`怎么创建连接的。
+``` java
+public class BoundRequestBuilder extends RequestBuilderBase<BoundRequestBuilder> {
+  private final AsyncHttpClient client;
+  public ListenableFuture<Response> execute() {
+      return client.executeRequest(build(), new AsyncCompletionHandlerBase());
+  }
+}
+
+public class DefaultAsyncHttpClient implements AsyncHttpClient {
+  @Override
+  public <T> ListenableFuture<T> executeRequest(Request request, AsyncHandler<T> handler) {
+      if (config.getRequestFilters().isEmpty()) {
+          return execute(request, handler);
+      } else {
+        //不考虑设置请求过滤器的情况
+      }
+  }
+  private <T> ListenableFuture<T> execute(Request request, final AsyncHandler<T> asyncHandler) {
+      try {
+          //把请求参数，和读取数据后的回调一同塞给请求发送器
+          return requestSender.sendRequest(request, asyncHandler, null, false);
+      } catch (Exception e) {
+          asyncHandler.onThrowable(e);
+          return new ListenableFuture.CompletedFailure<>(e);
+      }
+  }
+}
+```
+
+OK～～上面列出`NettyRequestSender`需要什么参数，现在再来看看怎么做的？
+下面的方法中，重点关注`sendRequestWithNewChannel`，它包括了如何新建channel、连接，抢占信号量
+``` java
+public <T> ListenableFuture<T> sendRequest(final Request request,//
+            final AsyncHandler<T> asyncHandler,//
+            NettyResponseFuture<T> future,//
+            boolean performingNextRequest) {
+    //...
+    ProxyServer proxyServer = getProxyServer(config, request);
+    //使用SSL代理或者ws
+    if (proxyServer != null && (request.getUri().isSecured() || request.getUri().isWebSocket()) && !isConnectDone(request, future))
+        //暂时忽略另外两个创建连接的方式
+    else
+        //我们的例子用的是GET，所以执行该方法
+        return sendRequestWithCertainForceConnect(request, asyncHandler, future, performingNextRequest, proxyServer, false);
+}
+
+private <T> ListenableFuture<T> sendRequestWithCertainForceConnect(//
+            Request request,//
+            AsyncHandler<T> asyncHandler,//
+            NettyResponseFuture<T> future,//注意，这时候传进来是null
+            boolean performingNextRequest,//
+            ProxyServer proxyServer,//
+            boolean forceConnect) {
+    //把所有请求信息保证在一个响应回调对象里
+    NettyResponseFuture<T> newFuture = newNettyRequestAndResponseFuture(request, asyncHandler, future, proxyServer, forceConnect);
+    //这里视图根据这个请求去拿去channel，过程有点漫长，回头再来解释
+    Channel channel = getOpenChannel(future, request, proxyServer, asyncHandler);
+
+    if (Channels.isChannelValid(channel))
+        return sendRequestWithOpenChannel(request, proxyServer, newFuture, asyncHandler, channel);
+    else
+        return sendRequestWithNewChannel(request, proxyServer, newFuture, asyncHandler, performingNextRequest);
+}
+private Channel getOpenChannel(NettyResponseFuture<?> future, Request request, ProxyServer proxyServer, AsyncHandler<?> asyncHandler) {
+    //future并没有channel，对于什么时候channel是可复用的，一直没搞明白，所以我基本默认每次都要新建一个channel
+    if (future != null && future.isReuseChannel() && Channels.isChannelValid(future.channel()))
+        return future.channel();
+    //视图在channelManager中找到可用对象
+    else
+        return pollPooledChannel(request, proxyServer, asyncHandler);
+}
+
+private <T> ListenableFuture<T> sendRequestWithOpenChannel(Request request, ProxyServer proxy, NettyResponseFuture<T> future, AsyncHandler<T> asyncHandler, Channel channel) {
+    if (asyncHandler instanceof AsyncHandlerExtensions)
+        AsyncHandlerExtensions.class.cast(asyncHandler).onConnectionPooled(channel);
+    //启动请求超时，在writeRequest中，会启动读取超时
+    TimeoutsHolder timeoutsHolder = scheduleRequestTimeout(future);
+    timeoutsHolder.initRemoteAddress((InetSocketAddress) channel.remoteAddress());
+    future.setChannelState(ChannelState.POOLED);
+    future.attachChannel(channel, false);
+
+    Channels.setAttribute(channel, future);
+    if (Channels.isChannelValid(channel)) {
+        writeRequest(future, channel);
+    } else {
+        handleUnexpectedClosedChannel(channel, future);
+    }
+    return future;
+}
+//把这里当作一个请求连接的开始
+private <T> ListenableFuture<T> sendRequestWithNewChannel(//
+            Request request,//
+            ProxyServer proxy,//
+            NettyResponseFuture<T> future,//
+            AsyncHandler<T> asyncHandler,//
+            boolean performingNextRequest) {
+
+    Realm realm = future.getRealm();
+    Realm proxyRealm = future.getProxyRealm();
+    //...
+    //为做连接做准备
+    Bootstrap bootstrap = channelManager.getBootstrap(request.getUri(), proxy);
+    //用于索取channel
+    Object partitionKey = future.getPartitionKey();
+    final boolean acquireChannelLock = !performingNextRequest;
+
+    try {
+        //抢占信号量
+        if (acquireChannelLock) {
+            channelManager.acquireChannelLock(partitionKey);
+        }
+    } catch (Throwable t) {
+        abort(null, future, getCause(t));
+        return future;
+    }
+    //开启请求超时定时器
+    scheduleRequestTimeout(future);
+    //域名解析
+    RequestHostnameResolver.INSTANCE.resolve(request, proxy, asyncHandler)//
+            .addListener(new SimpleFutureListener<List<InetSocketAddress>>() {
+                @Override
+                //域名解析后得到的IP地址列表
+                protected void onSuccess(List<InetSocketAddress> addresses) {
+                    NettyConnectListener<T> connectListener = new NettyConnectListener<>(future, NettyRequestSender.this, channelManager, acquireChannelLock, partitionKey);
+                    //不要怀疑！这里开始连接了！！！
+                    NettyChannelConnector connector = new NettyChannelConnector(request.getLocalAddress(), addresses, asyncHandler, clientState, config);
+                    if (!future.isDone()) {
+                        connector.connect(bootstrap, connectListener);
+                    } else if (acquireChannelLock) {
+                        //如果future已经完成，则释放信号量
+                        channelManager.releaseChannelLock(partitionKey);
+                    }
+                }
+                @Override
+                protected void onFailure(Throwable cause) {
+                    if (acquireChannelLock) {
+                        channelManager.releaseChannelLock(partitionKey);
+                    }
+                    abort(null, future, getCause(cause));
+                }
+            });
+
+    return future;
+}
+```
+
+``` java
+public class NettyChannelConnector {
+  public void connect(final Bootstrap bootstrap, final NettyConnectListener<?> connectListener) {
+      final InetSocketAddress remoteAddress = remoteAddresses.get(i);
+      if (asyncHandlerExtensions != null)
+          asyncHandlerExtensions.onTcpConnectAttempt(remoteAddress);
+      try {
+          connect0(bootstrap, connectListener, remoteAddress);
+      } catch (RejectedExecutionException e) {
+          if (clientState.isClosed()) {
+              connectListener.onFailure(null, e);
+          }
+      }
+  }
 }
 ```
