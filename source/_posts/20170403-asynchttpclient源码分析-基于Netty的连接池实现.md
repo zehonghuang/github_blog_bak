@@ -17,11 +17,6 @@ categories:
 
 由于是基Netty的实现的，所以连接池实际上就是对channel的管理控制，有趣的是整个管理只用到了信号量+一个定时检测器，略微复杂的也就定时检测的逻辑，其实现方式简单且很好理解，不像httpclient里各种队列各种信号量难以理解。
 
-[来个demo先！](#demo)
-
-[来个demo先！](#Config)
-
-- ### <a name='demo' color=#0099ff>来个demo先！</a>
 
 先上一个简单的例子，事实上使用起来也不复杂。
 ``` java
@@ -57,8 +52,6 @@ public class HttpTest {
     }
 }
 ```
-
-- ### <a name='Config' color=#0099ff>了解基本参数</a>
 
 先看看`DefaultAsyncHttpClientConfig`类的配置参数，这里只列出本文所需要的参数。有一点值得提一下，如果想了解Java怎么像clojure或者scala一样创建不可变对象，可以看看这个类的写法。
 ``` java
@@ -494,20 +487,22 @@ private <T> ListenableFuture<T> sendRequestWithNewChannel(//
                 }
                 @Override
                 protected void onFailure(Throwable cause) {
+                    //失败，释放信号
                     if (acquireChannelLock) {
                         channelManager.releaseChannelLock(partitionKey);
                     }
                     abort(null, future, getCause(cause));
                 }
             });
-
     return future;
 }
 ```
 
+`NettyChannelConnector`负责对远程IP创建连接，一旦连接成功，`NettyConnectListener`就会调用requestSender向服务端发送数据。
 ``` java
 public class NettyChannelConnector {
   public void connect(final Bootstrap bootstrap, final NettyConnectListener<?> connectListener) {
+      //获取DNS后的IP地址
       final InetSocketAddress remoteAddress = remoteAddresses.get(i);
       if (asyncHandlerExtensions != null)
           asyncHandlerExtensions.onTcpConnectAttempt(remoteAddress);
@@ -528,6 +523,7 @@ public class NettyChannelConnector {
                       if (asyncHandlerExtensions != null) {
                           asyncHandlerExtensions.onTcpConnectSuccess(remoteAddress, channel);
                       }
+                      //如果有设置连接的存活时间，则初始化channelId，在ChannelPool中自检有用到
                       if (connectionTtlEnabled) {
                           Channels.initChannelId(channel);
                       }
@@ -537,6 +533,7 @@ public class NettyChannelConnector {
                   public void onFailure(Channel channel, Throwable t) {
                       if (asyncHandlerExtensions != null)
                           asyncHandlerExtensions.onTcpConnectFailure(remoteAddress, t);
+                      //如果连接失败，则尝试连接下一个IP
                       boolean retry = pickNextRemoteAddress();
                       if (retry)
                           NettyChannelConnector.this.connect(bootstrap, connectListener);
@@ -547,3 +544,85 @@ public class NettyChannelConnector {
   }
 }
 ```
+
+连接成功，就来到这里，拿到channel，准备向服务器发送数据！
+``` java
+public final class NettyConnectListener<T> {
+  public void onSuccess(Channel channel, InetSocketAddress remoteAddress) {
+
+      Channels.setInactiveToken(channel);
+      TimeoutsHolder timeoutsHolder = future.getTimeoutsHolder();
+      if (futureIsAlreadyCancelled(channel)) {
+          return;
+      }
+      Request request = future.getTargetRequest();
+      Uri uri = request.getUri();
+      timeoutsHolder.initRemoteAddress(remoteAddress);
+
+      if (future.getProxyServer() == null && uri.isSecured()) {
+        //直接无视
+      } else {
+          writeRequest(channel);
+      }
+  }
+
+  private void writeRequest(Channel channel) {
+      if (futureIsAlreadyCancelled(channel)) {
+          return;
+      }
+      //在这设置属性，在读取服务器数据的httphandler里面有用到
+      Channels.setAttribute(channel, future);
+      //注册到ChannelGroup中
+      channelManager.registerOpenChannel(channel, partitionKey);
+      //设置为不复用channel
+      future.attachChannel(channel, false);
+      //发送请求数据
+      //这个方法就不贴上来了，没什么意思
+      //方法里最后将启动读取超时scheduleReadTimeout(future);意味将进入HttpHandler读取服务端数据
+      requestSender.writeRequest(future, channel);
+  }
+}
+```
+读取数据一切顺利后，就会走下面这个私有方法，将channel送入channelpool里，等待生命的结束！
+``` java
+public final class HttpHandler extends AsyncHttpClientHandler {
+  private void finishUpdate(final NettyResponseFuture<?> future, Channel channel, boolean expectOtherChunks) throws IOException {
+      future.cancelTimeouts();
+      boolean keepAlive = future.isKeepAlive();
+      //这里继续读取后面的数据块，最后channel被设置了回调，依然调用下面的tryToOfferChannelToPool方法
+      if (expectOtherChunks && keepAlive)
+          channelManager.drainChannelAndOffer(channel, future);
+      else
+          channelManager.tryToOfferChannelToPool(channel, future.getAsyncHandler(), keepAlive, future.getPartitionKey());
+      try {
+          future.done();
+      } catch (Exception t) {}
+  }
+}
+```
+
+**tryToOfferChannelToPool** 是`ChannelManager`的方法，主要将依然活跃的channel送入生命倒数器中，还记得connectionTtl么，这个参数在这就起作用了！
+``` java
+public final void tryToOfferChannelToPool(Channel channel, AsyncHandler<?> asyncHandler, boolean keepAlive, Object partitionKey) {
+    //长连接，或者依然活跃的
+    if (channel.isActive() && keepAlive) {
+        //丢弃被设置的属性
+        Channels.setDiscard(channel);
+        if (asyncHandler instanceof AsyncHandlerExtensions)
+            AsyncHandlerExtensions.class.cast(asyncHandler).onConnectionOffer(channel);
+            //尝试塞进pool里
+        if (channelPool.offer(channel, partitionKey)) {
+            if (maxConnectionsPerHostEnabled)
+                //我没明白这个映射到底是干嘛用的
+                channelId2PartitionKey.putIfAbsent(channel, partitionKey);
+        } else {
+          //被pool驳回，就直接关闭掉！！
+            closeChannel(channel);
+        }
+    } else {
+      //已经死亡或者不是长连接，直接关闭！！
+        closeChannel(channel);
+    }
+}
+```
+到这里，关于channel的抢占和释放基本已经结束了，
