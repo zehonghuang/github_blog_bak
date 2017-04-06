@@ -13,7 +13,7 @@ categories:
 
 ---
 
-这里暂且仅关注连接池的实现，部分涉及Netty的channel输入输出处理、哈希轮定时器算法、事件轮询方式的区别，又或者信号量的使用等等，以后有机会会单独拿出来详解。
+**这里暂且仅关注连接池的实现，部分涉及Netty的channel输入输出处理、哈希轮定时器算法、事件轮询方式的区别，又或者信号量的使用等等，以后有机会会单独拿出来详解。**
 
 由于是基Netty的实现的，所以连接池实际上就是对channel的管理控制，有趣的是整个管理只用到了信号量+一个定时检测器，略微复杂的也就定时检测的逻辑，其实现方式简单且很好理解，不像httpclient里各种队列各种信号量难以理解。
 
@@ -202,7 +202,7 @@ public class ChannelManager {
     if (maxTotalConnectionsEnabled || maxConnectionsPerHostEnabled) {
         //管理已经被实例化的channel
         openChannels = new DefaultChannelGroup("asyncHttpClient", GlobalEventExecutor.INSTANCE) {
-            //重载删除方法，因为删除channel时，需要释放信号量
+            //重写删除方法，因为删除channel时，需要释放信号量
             @Override
             public boolean remove(Object o) {
                 boolean removed = super.remove(o);
@@ -625,4 +625,135 @@ public final void tryToOfferChannelToPool(Channel channel, AsyncHandler<?> async
     }
 }
 ```
-到这里，关于channel的抢占和释放基本已经结束了，
+
+到这里，关于channel已经接近尾声了，细心的童鞋可能发现，信号量呢？！不用释放么？！其实在关闭channel的时候，已经释放了，这是因为 **ChannelGroup** 的作用，在将channel注册(add方法)到group的时候，已经在其上面加了关闭的监听器，一旦close就执行remove，实例化 **ChannelGroup** 时已经将`remove(channel)`重写，可以倒回去看是不是已经释放了信号量，也可以看看 **ChannelGroup** 源码是不是在`add`时候添加了监听器。
+
+不过，这里只是接近尾声，没意味就结束了，还有存活的channel被塞到 **ChannelPool** 进行生命的倒计时。
+``` java
+public final class DefaultChannelPool implements ChannelPool {
+  private final ConcurrentHashMap<Object, ConcurrentLinkedDeque<IdleChannel>> partitions = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<ChannelId, ChannelCreation> channelId2Creation;
+  private final AtomicBoolean isClosed = new AtomicBoolean(false);
+  private final Timer nettyTimer;
+  private final int connectionTtl;
+  private final boolean connectionTtlEnabled;
+  private final int maxIdleTime;
+  private final boolean maxIdleTimeEnabled;
+  private final long cleanerPeriod;
+  private final PoolLeaseStrategy poolLeaseStrategy;
+
+  public DefaultChannelPool(int maxIdleTime,//
+            int connectionTtl,//
+            PoolLeaseStrategy poolLeaseStrategy,//
+            Timer nettyTimer,//
+            int cleanerPeriod) {
+      this.maxIdleTime = maxIdleTime;
+      this.connectionTtl = connectionTtl;
+      connectionTtlEnabled = connectionTtl > 0;
+      channelId2Creation = connectionTtlEnabled ? new ConcurrentHashMap<>() : null;
+      this.nettyTimer = nettyTimer;
+      maxIdleTimeEnabled = maxIdleTime > 0;
+      this.poolLeaseStrategy = poolLeaseStrategy;
+
+      this.cleanerPeriod = Math.min(cleanerPeriod, Math.min(connectionTtlEnabled ? connectionTtl : Integer.MAX_VALUE, maxIdleTimeEnabled ? maxIdleTime : Integer.MAX_VALUE));
+
+      if (connectionTtlEnabled || maxIdleTimeEnabled)
+          scheduleNewIdleChannelDetector(new IdleChannelDetector());
+  }
+
+  private void scheduleNewIdleChannelDetector(TimerTask task) {
+      nettyTimer.newTimeout(task, cleanerPeriod, TimeUnit.MILLISECONDS);
+  }
+
+  private final class IdleChannelDetector implements TimerTask {
+      private boolean isIdleTimeoutExpired(IdleChannel idleChannel, long now) {
+          return maxIdleTimeEnabled && now - idleChannel.start >= maxIdleTime;
+      }
+      private List<IdleChannel> expiredChannels(ConcurrentLinkedDeque<IdleChannel> partition, long now) {
+          List<IdleChannel> idleTimeoutChannels = null;
+          for (IdleChannel idleChannel : partition) {
+              boolean isIdleTimeoutExpired = isIdleTimeoutExpired(idleChannel, now);
+              boolean isRemotelyClosed = isRemotelyClosed(idleChannel.channel);
+              boolean isTtlExpired = isTtlExpired(idleChannel.channel, now);
+              if (isIdleTimeoutExpired || isRemotelyClosed || isTtlExpired) {
+                  if (idleTimeoutChannels == null)
+                      idleTimeoutChannels = new ArrayList<>(1);
+                  idleTimeoutChannels.add(idleChannel);
+              }
+          }
+          return idleTimeoutChannels != null ? idleTimeoutChannels : Collections.<IdleChannel> emptyList();
+      }
+      private List<IdleChannel> closeChannels(List<IdleChannel> candidates) {
+          List<IdleChannel> closedChannels = null;
+          for (int i = 0; i < candidates.size(); i++) {
+              IdleChannel idleChannel = candidates.get(i);
+              if (idleChannel.takeOwnership()) {
+                  close(idleChannel.channel);
+                  if (closedChannels != null) {
+                      closedChannels.add(idleChannel);
+                  }
+              } else if (closedChannels == null) {
+                  closedChannels = new ArrayList<>(candidates.size());
+                  for (int j = 0; j < i; j++)
+                      closedChannels.add(candidates.get(j));
+              }
+          }
+          return closedChannels != null ? closedChannels : candidates;
+      }
+      public void run(Timeout timeout) throws Exception {
+          if (isClosed.get())
+              return;
+          long start = unpreciseMillisTime();
+          int closedCount = 0;
+          int totalCount = 0;
+          for (ConcurrentLinkedDeque<IdleChannel> partition : partitions.values()) {
+              List<IdleChannel> closedChannels = closeChannels(expiredChannels(partition, start));
+              if (!closedChannels.isEmpty()) {
+                  if (connectionTtlEnabled) {
+                      for (IdleChannel closedChannel : closedChannels)
+                          channelId2Creation.remove(channelId(closedChannel.channel));
+                  }
+                  partition.removeAll(closedChannels);
+                  closedCount += closedChannels.size();
+              }
+          }
+          scheduleNewIdleChannelDetector(timeout.task());
+      }
+  }
+
+  private static final class ChannelCreation {
+      final long creationTime;
+      final Object partitionKey;
+      ChannelCreation(long creationTime, Object partitionKey) {
+          this.creationTime = creationTime;
+          this.partitionKey = partitionKey;
+      }
+  }
+
+  private static final class IdleChannel {
+      final Channel channel;
+      final long start;
+      final AtomicBoolean owned = new AtomicBoolean(false);
+      IdleChannel(Channel channel, long start) {
+          this.channel = assertNotNull(channel, "channel");
+          this.start = start;
+      }
+      public boolean takeOwnership() {
+          return owned.compareAndSet(false, true);
+      }
+      @Override
+      public boolean equals(Object o) {...}
+      @Override
+      public int hashCode() {...}
+  }
+
+  private static final class ChannelCreation {
+      final long creationTime;
+      final Object partitionKey;
+      ChannelCreation(long creationTime, Object partitionKey) {
+          this.creationTime = creationTime;
+          this.partitionKey = partitionKey;
+      }
+  }
+}
+```
