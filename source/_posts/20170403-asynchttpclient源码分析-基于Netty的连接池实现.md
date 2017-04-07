@@ -626,7 +626,7 @@ public final void tryToOfferChannelToPool(Channel channel, AsyncHandler<?> async
 }
 ```
 
-到这里，关于channel已经接近尾声了，细心的童鞋可能发现，信号量呢？！不用释放么？！其实在关闭channel的时候，已经释放了，这是因为 **ChannelGroup** 的作用，在将channel注册(add方法)到group的时候，已经在其上面加了关闭的监听器，一旦close就执行remove，实例化 **ChannelGroup** 时已经将`remove(channel)`重写，可以倒回去看是不是已经释放了信号量，也可以看看 **ChannelGroup** 源码是不是在`add`时候添加了监听器。
+<font color=#f28080>到这里，关于channel已经接近尾声了，细心的童鞋可能发现，信号量呢？！不用释放么？！其实在关闭channel的时候，已经释放了，这是因为 **ChannelGroup** 的作用，在将channel注册(add方法)到group的时候，已经在其上面加了关闭的监听器，一旦close就执行remove，实例化 **ChannelGroup** 时已经将`remove(channel)`重写，可以倒回去看是不是已经释放了信号量，也可以看看 **ChannelGroup** 源码是不是在`add`时候添加了监听器。</font>
 
 不过，这里只是接近尾声，没意味就结束了，还有存活的channel被塞到 **ChannelPool** 进行生命的倒计时。
 ``` java
@@ -654,9 +654,9 @@ public final class DefaultChannelPool implements ChannelPool {
       this.nettyTimer = nettyTimer;
       maxIdleTimeEnabled = maxIdleTime > 0;
       this.poolLeaseStrategy = poolLeaseStrategy;
-
-      this.cleanerPeriod = Math.min(cleanerPeriod, Math.min(connectionTtlEnabled ? connectionTtl : Integer.MAX_VALUE, maxIdleTimeEnabled ? maxIdleTime : Integer.MAX_VALUE));
-
+      //在cleanerPeriod清理周期时间、connectionTtl连接存活时间、maxIdleTime最大空闲时间中选择最小的
+      this.cleanerPeriod = Math.min(cleanerPeriod定时清理周期, Math.min(connectionTtlEnabled ? connectionTtl : Integer.MAX_VALUE, maxIdleTimeEnabled ? maxIdleTime : Integer.MAX_VALUE));
+      //如果开启了连接存活时间，或者最大空闲时间，则实例化空闲channel检测
       if (connectionTtlEnabled || maxIdleTimeEnabled)
           scheduleNewIdleChannelDetector(new IdleChannelDetector());
   }
@@ -666,15 +666,17 @@ public final class DefaultChannelPool implements ChannelPool {
   }
 
   private final class IdleChannelDetector implements TimerTask {
-      private boolean isIdleTimeoutExpired(IdleChannel idleChannel, long now) {
-          return maxIdleTimeEnabled && now - idleChannel.start >= maxIdleTime;
-      }
+      //挖出已经不满足条件的channel
       private List<IdleChannel> expiredChannels(ConcurrentLinkedDeque<IdleChannel> partition, long now) {
           List<IdleChannel> idleTimeoutChannels = null;
           for (IdleChannel idleChannel : partition) {
+              //空闲时间是否过期
               boolean isIdleTimeoutExpired = isIdleTimeoutExpired(idleChannel, now);
+              //channel是否还活跃
               boolean isRemotelyClosed = isRemotelyClosed(idleChannel.channel);
+              //存活时间是否过期
               boolean isTtlExpired = isTtlExpired(idleChannel.channel, now);
+              //满足其中一个条件，加入即将被关闭的channel队列
               if (isIdleTimeoutExpired || isRemotelyClosed || isTtlExpired) {
                   if (idleTimeoutChannels == null)
                       idleTimeoutChannels = new ArrayList<>(1);
@@ -683,31 +685,39 @@ public final class DefaultChannelPool implements ChannelPool {
           }
           return idleTimeoutChannels != null ? idleTimeoutChannels : Collections.<IdleChannel> emptyList();
       }
+      //关闭expiredChannels筛选出来的队列，并返回一个已被close的channel队列
       private List<IdleChannel> closeChannels(List<IdleChannel> candidates) {
           List<IdleChannel> closedChannels = null;
           for (int i = 0; i < candidates.size(); i++) {
               IdleChannel idleChannel = candidates.get(i);
+              //如果未被占有，则直接close；如果中间出现有被占有的channel，实例化closedChannels，并将之前被close的channel塞进其中
               if (idleChannel.takeOwnership()) {
                   close(idleChannel.channel);
                   if (closedChannels != null) {
                       closedChannels.add(idleChannel);
                   }
-              } else if (closedChannels == null) {
+              } //注意，这里只会被执行一次，closedChannels被实例化后不会再执行
+              else if (closedChannels == null) {
                   closedChannels = new ArrayList<>(candidates.size());
                   for (int j = 0; j < i; j++)
                       closedChannels.add(candidates.get(j));
               }
           }
+          //如果closedChannels为null，代表已经关闭candidates所有channel，原封不动返回
+          //如果closedChannels非null，代表被占用的channel没有close并继续存活在candidates，所以返回被close了的channel队列closedChannels
           return closedChannels != null ? closedChannels : candidates;
       }
       public void run(Timeout timeout) throws Exception {
           if (isClosed.get())
               return;
+          //检测器的启动时间
           long start = unpreciseMillisTime();
           int closedCount = 0;
           int totalCount = 0;
+          //遍历每个路由的被塞到ChannelPool的channel队列
           for (ConcurrentLinkedDeque<IdleChannel> partition : partitions.values()) {
               List<IdleChannel> closedChannels = closeChannels(expiredChannels(partition, start));
+              //非空且开启了连接存活时间的channel且被close的channel，全部从channelId2Creation和partition中去除
               if (!closedChannels.isEmpty()) {
                   if (connectionTtlEnabled) {
                       for (IdleChannel closedChannel : closedChannels)
@@ -717,19 +727,12 @@ public final class DefaultChannelPool implements ChannelPool {
                   closedCount += closedChannels.size();
               }
           }
+          //退出并继续下一轮检测
           scheduleNewIdleChannelDetector(timeout.task());
       }
   }
 
-  private static final class ChannelCreation {
-      final long creationTime;
-      final Object partitionKey;
-      ChannelCreation(long creationTime, Object partitionKey) {
-          this.creationTime = creationTime;
-          this.partitionKey = partitionKey;
-      }
-  }
-
+  //存放空闲channel
   private static final class IdleChannel {
       final Channel channel;
       final long start;
@@ -746,7 +749,7 @@ public final class DefaultChannelPool implements ChannelPool {
       @Override
       public int hashCode() {...}
   }
-
+  //存放channel的创建时间
   private static final class ChannelCreation {
       final long creationTime;
       final Object partitionKey;
@@ -757,3 +760,67 @@ public final class DefaultChannelPool implements ChannelPool {
   }
 }
 ```
+这里才是channel的终结！！！
+
+channel被终结了，但有些还存活的channel还在请求的路上，还有很重要的两点没说到，就是 **请求超时** 和 **读取超时**。
+每个`NettyResponseFuture`都持有一个`TimeoutsHolder`来计算 **requestTimeout** 和 **readTimeout** 是否过期。在ResponseFuture获取连接后，以及获取成功向服务器发送数据后，都会分别启动请求超时和读取超时两个定时器。通过阅读源码，可以发现 **requestTimeout** 其实是包括了 **readTimeout**，如果请求剩余时间小于读取超时时间时，`startReadTimeout`是不会启动readTimeout定时器的。下面只贴上`TimeoutsHolder`的部分源码，`RequestTimeoutTimerTask`和`ReadTimeoutTimerTask`可以自行阅读。
+
+<font color=#f28080>对于这两个参数，需要说明一点就是，一旦超时过期，channel和future都会被close掉，如果读超设置比请超长则是无意义的，只会以requestTimeout为准。</font>
+``` java
+public class TimeoutsHolder {
+  private final AtomicBoolean cancelled = new AtomicBoolean();
+
+  private final Timer nettyTimer;
+  private final NettyRequestSender requestSender;
+  private final long requestTimeoutMillisTime;
+  private final int readTimeoutValue;
+
+  private volatile NettyResponseFuture<?> nettyResponseFuture;
+  public final Timeout requestTimeout;
+  public volatile Timeout readTimeout;
+
+  public TimeoutsHolder(Timer nettyTimer, NettyResponseFuture<?> nettyResponseFuture, NettyRequestSender requestSender, AsyncHttpClientConfig config) {
+      this.nettyTimer = nettyTimer;
+      this.nettyResponseFuture = nettyResponseFuture;
+      this.requestSender = requestSender;
+      this.readTimeoutValue = config.getReadTimeout();
+      int requestTimeoutInMs = nettyResponseFuture.getTargetRequest().getRequestTimeout();
+      //每个请求都可以独立设置请求超时时间
+      if (requestTimeoutInMs == 0) {
+          requestTimeoutInMs = config.getRequestTimeout();
+      }
+      if (requestTimeoutInMs != -1) {
+          //请求的到期时间，启动请求超时定时器
+          requestTimeoutMillisTime = unpreciseMillisTime() + requestTimeoutInMs;
+          requestTimeout = newTimeout(new RequestTimeoutTimerTask(nettyResponseFuture, requestSender, this, requestTimeoutInMs), requestTimeoutInMs);
+      } else {
+          requestTimeoutMillisTime = -1L;
+          requestTimeout = null;
+      }
+  }
+
+  public void startReadTimeout() {
+      if (readTimeoutValue != -1) {
+          startReadTimeout(null);
+      }
+  }
+  void startReadTimeout(ReadTimeoutTimerTask task) {
+      //如果requestTimeout不为null，或者requestTimeout还没有过期并且读取超时时间<请求剩余时间
+      if (requestTimeout == null || (!requestTimeout.isExpired() && readTimeoutValue < (requestTimeoutMillisTime - unpreciseMillisTime()))) {
+          if (task == null) {
+              task = new ReadTimeoutTimerTask(nettyResponseFuture, requestSender, this, readTimeoutValue);
+          }
+          Timeout readTimeout = newTimeout(task, readTimeoutValue);
+          this.readTimeout = readTimeout;
+      } else if (task != null) {
+          task.clean();
+      }
+  }
+}
+```
+
+最后最后最后。。。
+
+来总结一下ahc的连接池实现，很明显的一点整个过程都是对`Channel`的管理，而且对于连接的抢占则使用了`Semaphore`，这再方便不过了！！！对于信号量的释放，Netty的`ChannelGroup`有很大的功劳，它提供了最优雅的方式关闭channel并且释放信号量。除此之外，一堆的超时限制任务需要一个定时任务容器执行，Netty又提供了一个在面对大量任务依然稳坐泰山的`HashedWheelTimer`，有机会专门来说说这一个。还有就是`DefaultChannelPool`对存活时间的检测，实在是通俗易懂，而且基于前面说的几点，实现起来也相当方便。
+
+如果遇到基于netty的网络编程开发，对于连接资源的管理ahc确实提供了一套不错的思路，不仅对客户端，服务端也是可以试一试的！
