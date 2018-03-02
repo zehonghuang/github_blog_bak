@@ -40,7 +40,8 @@ protected boolean tryRelease(int arg) {
 }
 
 ```
-ss
+
+![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
 
 ``` java
 
@@ -133,6 +134,37 @@ private Node enq(final Node node) {
       }
     }
   }
+}
+
+```
+
+sss
+
+``` java
+
+final boolean acquireQueued(final Node node, int arg) {
+  boolean failed = true;
+  try {
+    boolean interrupted = false;
+    for (;;) {
+      //获取前节点，如果是表头则尝试获取锁
+      final Node p = node.predecessor();
+      if (p == head && tryAcquire(arg)) {
+                //若成功，则将当前节点设置为表头
+                setHead(node);
+                p.next = null; // help GC
+                failed = false;
+                return interrupted;
+            }
+            //检查抢占锁失败的线程是否要被挂起，以及是否被中断
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                    parkAndCheckInterrupt())
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
 }
 
 ```
