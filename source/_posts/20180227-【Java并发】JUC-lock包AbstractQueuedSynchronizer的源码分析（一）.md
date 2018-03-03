@@ -21,37 +21,38 @@ jdk提供了JUC这个并发包，里面就包含了功能更多的lock包，有R
 
 ---
 
+咱先来看下ReentrantLock怎么用的，语义上跟synchronized是一致的，不过lock()与unlock()需要成对存在。
 ``` java
-private transient volatile Node head;
-private transient volatile Node tail;
-private volatile int state;
-
-public final void acquire(int arg) {
-  //尝试获取锁，若失败，则进入等待队列;
-  //acquireQueued将线程挂起，挂起异常则selfInterrupt中断当前线程
-  if (!tryAcquire(arg) &&
-          acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
-      selfInterrupt();
+private int count = 0;
+public void task() {
+  Lock lock = new ReentrantLock();
+  lock.lock();
+  for(int j = 0; j < 10; j++) {
+    count++;
+  }
+  lock.unlock();
 }
-
-protected boolean tryAcquire(int arg) {
-  throw new UnsupportedOperationException();
-}
-
-protected boolean tryRelease(int arg) {
-  throw new UnsupportedOperationException();
+```
+这里看到lock()是调用了抽象内部类Sync的lock方法，具体实现在其子类FairSync、NonfairSync。
+``` java
+public class ReentrantLock implements Lock, java.io.Serializable {
+  private final Sync sync;
+  public void lock() {
+    sync.lock();
+  }
+  abstract static class Sync extends AbstractQueuedSynchronizer {
+    abstract void lock();
+  }
 }
 ```
 
-公平锁与非公平锁
+我们先来看一下ReentrantLock的公平锁怎么实现的，可以看到lock()只调用了acquire(1)，acquire是AQS的一个方法。
 ``` java
 static final class FairSync extends Sync {
   private static final long serialVersionUID = -3000897897090466540L;
-
   final void lock() {
       acquire(1);
   }
-
   //尝试获取锁
   protected final boolean tryAcquire(int acquires) {
     //获取当前线程
@@ -77,23 +78,31 @@ static final class FairSync extends Sync {
     return false;
   }
 }
+```
 
-static final class NonfairSync extends Sync {
-  private static final long serialVersionUID = 7316153563782823691L;
+``` java
+private transient volatile Node head;
+private transient volatile Node tail;
+private volatile int state;
 
-  final void lock() {
-    //
-    if (compareAndSetState(0, 1))
-        setExclusiveOwnerThread(Thread.currentThread());
-    else
-        acquire(1);
-  }
+public final void acquire(int arg) {
+  //尝试获取锁，若失败，则进入等待队列;
+  //acquireQueued将线程挂起，挂起异常则selfInterrupt中断当前线程
+  if (!tryAcquire(arg) &&
+          acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+      selfInterrupt();
+}
 
-  protected final boolean tryAcquire(int acquires) {
-    return nonfairTryAcquire(acquires);
-  }
+protected boolean tryAcquire(int arg) {
+  throw new UnsupportedOperationException();
+}
+
+protected boolean tryRelease(int arg) {
+  throw new UnsupportedOperationException();
 }
 ```
+
+
 
 ![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
 
@@ -221,4 +230,23 @@ final boolean acquireQueued(final Node node, int arg) {
     }
 }
 
+```
+
+sss
+``` java
+static final class NonfairSync extends Sync {
+  private static final long serialVersionUID = 7316153563782823691L;
+
+  final void lock() {
+    //
+    if (compareAndSetState(0, 1))
+        setExclusiveOwnerThread(Thread.currentThread());
+    else
+        acquire(1);
+  }
+
+  protected final boolean tryAcquire(int acquires) {
+    return nonfairTryAcquire(acquires);
+  }
+}
 ```
