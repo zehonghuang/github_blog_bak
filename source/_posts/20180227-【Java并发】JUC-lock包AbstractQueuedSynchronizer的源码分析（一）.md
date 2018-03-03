@@ -1,5 +1,5 @@
 ---
-title: 【Java并发】JUC.lock包AbstractQueuedSynchronizer的源码分析
+title: 【Java并发】JUC.lock包AbstractQueuedSynchronizer的源码分析（一）
 date: 2018-02-27 20:28:55
 tags:
   - java　
@@ -13,12 +13,15 @@ categories:
     - java并发编程
 ---
 
-dddd
+平时开发不少使用`synchronized`，java提供了这个语法特性使用起来非常方便，但灵活性似乎不太好，因为它只是个独占且可重入锁，无法唤醒指定线程和实现共享等其他类型锁。
+
+jdk提供了JUC这个并发包，里面就包含了功能更多的lock包，有ReentrantLock、ReentrantReadWriteLock等多功能锁，而实现这些锁的核心在于一个同步器AbstractQueuedSynchronizer（AQS）。
+
+我们从AQS开始分析，了解一下jdk提供的公平锁、非公平锁、共享锁、独占锁、读写锁分别是怎么实现的。
 
 ---
 
 ``` java
-
 private transient volatile Node head;
 private transient volatile Node tail;
 private volatile int state;
@@ -38,7 +41,58 @@ protected boolean tryAcquire(int arg) {
 protected boolean tryRelease(int arg) {
   throw new UnsupportedOperationException();
 }
+```
 
+公平锁与非公平锁
+``` java
+static final class FairSync extends Sync {
+  private static final long serialVersionUID = -3000897897090466540L;
+
+  final void lock() {
+      acquire(1);
+  }
+
+  //尝试获取锁
+  protected final boolean tryAcquire(int acquires) {
+    //获取当前线程
+    final Thread current = Thread.currentThread();
+    int c = getState();
+    //如果c=0，则锁处于空闲状态
+    if (c == 0) {
+      //如果当前线程没有前节点的话，将cas state，成功则唤醒当前线程，返回true
+      if (!hasQueuedPredecessors() &&
+            compareAndSetState(0, acquires)) {
+        setExclusiveOwnerThread(current);
+        return true;
+      }
+    }
+    //c非0，如果当前线程已经持有锁，则state + 1，返回true。再次已实现可重入性
+    else if (current == getExclusiveOwnerThread()) {
+      int nextc = c + acquires;
+      if (nextc < 0)
+        throw new Error("Maximum lock count exceeded");
+        setState(nextc);
+        return true;
+    }
+    return false;
+  }
+}
+
+static final class NonfairSync extends Sync {
+  private static final long serialVersionUID = 7316153563782823691L;
+
+  final void lock() {
+    //
+    if (compareAndSetState(0, 1))
+        setExclusiveOwnerThread(Thread.currentThread());
+    else
+        acquire(1);
+  }
+
+  protected final boolean tryAcquire(int acquires) {
+    return nonfairTryAcquire(acquires);
+  }
+}
 ```
 
 ![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
