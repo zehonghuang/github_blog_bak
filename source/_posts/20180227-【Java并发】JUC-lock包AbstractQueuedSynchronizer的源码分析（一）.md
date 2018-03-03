@@ -53,7 +53,6 @@ static final class FairSync extends Sync {
   final void lock() {
       acquire(1);
   }
-  //尝试获取锁
   protected final boolean tryAcquire(int acquires) {
     //获取当前线程
     final Thread current = Thread.currentThread();
@@ -80,11 +79,14 @@ static final class FairSync extends Sync {
 }
 ```
 
-``` java
-private transient volatile Node head;
-private transient volatile Node tail;
-private volatile int state;
+先看一下AQS的acquire方法，每次调用都会去尝试获取锁，tryAcquire方法是个空方法，有子类做具体的实现。回头来看FairSync的实现。
 
+`current`是当前线程，先判断锁是非空闲；如果是，hasQueuedPredecessors再判断线程是否有前节点，没有则compareAndSetState将state设置为acquires。
+
+如果锁不是空闲状态，且当前线程是锁的持有人，则将state设置为state + acquires。在这一步已经实现了Lock的可重入性，线程进入lock()后，会判断当前线程是否已经持有锁，是的话将state加1.
+``` java
+//记录lock()被多少调用了几次，0表示空闲状态，大于0表示忙碌状态
+private volatile int state;
 public final void acquire(int arg) {
   //尝试获取锁，若失败，则进入等待队列;
   //acquireQueued将线程挂起，挂起异常则selfInterrupt中断当前线程
@@ -92,21 +94,20 @@ public final void acquire(int arg) {
           acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
       selfInterrupt();
 }
-
+//尝试获取锁
 protected boolean tryAcquire(int arg) {
   throw new UnsupportedOperationException();
 }
-
 protected boolean tryRelease(int arg) {
   throw new UnsupportedOperationException();
 }
 ```
 
-
-
 ![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
 
 ``` java
+private transient volatile Node head;
+private transient volatile Node tail;
 
 static final class Node {
   //共享类型
