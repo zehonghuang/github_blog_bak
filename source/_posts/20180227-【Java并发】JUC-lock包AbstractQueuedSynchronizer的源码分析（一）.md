@@ -103,12 +103,14 @@ protected boolean tryRelease(int arg) {
 }
 ```
 
-![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
+OK！上面已经知道了Lock是怎么实现可重入性的，现在了解一下怎么管理抢占失败而被挂起的线程。
 
+看到AQS的内部类Node，即可知道是一个双链表，表头Head代表当前占有锁的线程，抢占失败的线程将被添加到尾部。
+![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
+可以看到Node都有类型和挂起状态，作用于实现各类锁。在上面的代码可以看到acquire方法中通过`addWaiter`方法将新节点添加到尾部的。
 ``` java
 private transient volatile Node head;
 private transient volatile Node tail;
-
 static final class Node {
   //共享类型
   static final Node SHARED = new Node();
@@ -117,24 +119,20 @@ static final class Node {
 
   //取消状态
   static final int CANCELLED =  1;
-  //等待触发
+  //等待触发，即抢占不到锁被挂起
   static final int SIGNAL    = -1;
-  //等待条件符合
+  //等待条件符合，需要等待Condition的signal唤醒，Lock提供了newCondition()，作用跟Object的wait()与notify()是一样的
   static final int CONDITION = -2;
-  //节点状态向后传递
+  //节点状态向后传递，在共享锁有用处
   static final int PROPAGATE = -3;
 
   //挂起的状态
   volatile int waitStatus;
-
   volatile Node prev;
-
   volatile Node next;
-
   volatile Thread thread;
-
+  //节点类型，是共享还是独占
   Node nextWaiter;
-
   final boolean isShared() {
       return nextWaiter == SHARED;
   }
@@ -156,18 +154,12 @@ static final class Node {
     this.thread = thread;
   }
 }
-
 ```
-
-sss
-
+这里我看一下AQS是怎么把线程添加到链表的。将当前tail设置为pred，如果非空，把pred设置为当前node的前节点prev，再将node设置到成员变量tail。如果tail为null，说明此刻双链表未初始化，进去`enq`。
 ``` java
-
 private Node addWaiter(Node mode) {
   //创建当前线程为新节点
   Node node = new Node(Thread.currentThread(), mode);
-  // Try the fast path of enq; backup to full enq on failure
-  //
   Node pred = tail;
   if (pred != null) {
     node.prev = pred;
@@ -181,16 +173,16 @@ private Node addWaiter(Node mode) {
   enq(node);
   return node;
 }
-
 private Node enq(final Node node) {
   for (;;) {
     Node t = tail;
     //此时链表为空，初始化双链表
-    if (t == null) { // Must initialize
-      if (compareAndSetHead(new Node()))
+    //第一个成功抢占锁的线程是不会被添加到双链表的，所以第二个线程进来时tail是空的
+    if (t == null) {
+      if (compareAndSetHead(new Node())) //存在多线程同时修改head的情况
         tail = head;
     } else {
-      //将node添加到链表尾部，直到成功返回
+      //如果此刻tail非空，将node添加到链表尾部，直到成功返回
       node.prev = t;
       if (compareAndSetTail(t, node)) {
         t.next = node;
@@ -199,7 +191,6 @@ private Node enq(final Node node) {
     }
   }
 }
-
 ```
 
 sss
