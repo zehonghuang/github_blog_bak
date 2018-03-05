@@ -27,10 +27,13 @@ private int count = 0;
 public void task() {
   Lock lock = new ReentrantLock();
   lock.lock();
-  for(int j = 0; j < 10; j++) {
-    count++;
+  try {
+    for(int j = 0; j < 10; j++) {
+      count++;
+    }
+  } finally {
+    lock.unlock();
   }
-  lock.unlock();
 }
 ```
 这里看到lock()是调用了抽象内部类Sync的lock方法，具体实现在其子类FairSync、NonfairSync。
@@ -107,6 +110,7 @@ OK！上面已经知道了Lock是怎么实现可重入性的，现在了解一�
 
 看到AQS的内部类Node，即可知道是一个双链表，表头Head代表当前占有锁的线程，抢占失败的线程将被添加到尾部。
 ![双链表](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/AbstractQueuedSynchronizer-Node.png)
+
 可以看到Node都有类型和挂起状态，作用于实现各类锁。在上面的代码可以看到acquire方法中通过`addWaiter`方法将新节点添加到尾部的。
 ``` java
 private transient volatile Node head;
@@ -193,7 +197,9 @@ private Node enq(final Node node) {
 }
 ```
 
-sss
+上面的代码只展示了线程如何变成一个Node被塞进链表末端的，至关重要的线程挂起则在下面`acquireQueued`方法。挂起线程最终会调用到`LockSupport.park`这个静态方法，而park又调用了`Unsafe.park`这个本地方法。
+
+acquireQueued的逻辑其实跟while里的wait是差不多的，一直在被无意义的循环，被挂起，直到当前节点被推到第二个节点，head结束后，被unpark唤醒后及时抢占锁(详见`unparkSuccessor`方法)
 
 ``` java
 
@@ -204,27 +210,46 @@ final boolean acquireQueued(final Node node, int arg) {
     for (;;) {
       //获取前节点，如果是表头则尝试获取锁
       final Node p = node.predecessor();
-      if (p == head && tryAcquire(arg)) {
-                //若成功，则将当前节点设置为表头
-                setHead(node);
-                p.next = null; // help GC
-                failed = false;
-                return interrupted;
-            }
-            //检查抢占锁失败的线程是否要被挂起，以及是否被中断
-            if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
-                interrupted = true;
-        }
-    } finally {
-        if (failed)
-            cancelAcquire(node);
+      if (p == head && tryAcquire(arg)) { //被挂起前最后一次挣扎，也许这时head已经完事了，就该轮到自己了
+        //若成功，则将当前节点设置为表头
+        setHead(node);
+        p.next = null; // help GC
+        failed = false;
+        return interrupted;
+      }
+      //检查当前上一个节点是否应该被挂起
+      if (shouldParkAfterFailedAcquire(p, node) &&
+            //挂起线程以及检查是否中断
+            parkAndCheckInterrupt())
+        interrupted = true;
     }
+  } finally {
+    if (failed)
+      cancelAcquire(node);
+  }
+}
+
+private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+  int ws = pred.waitStatus;
+  //上一个节点还在等待中，则返回true，该节点也要乖乖在队列中等待
+  if (ws == Node.SIGNAL)
+    return true;
+  //把取消状态中的节点全部移除
+  if (ws > 0) {
+    do {
+      node.prev = pred = pred.prev;
+    } while (pred.waitStatus > 0);
+    pred.next = node;
+  } else {
+    //这一步没有理解明白，但应该是再一次重试获取，确保被挂起之前不能获取到锁，如果还是失败，下一轮循环将被挂起
+    compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+  }
+  return false;
 }
 
 ```
 
-sss
+
 ``` java
 static final class NonfairSync extends Sync {
   private static final long serialVersionUID = 7316153563782823691L;
