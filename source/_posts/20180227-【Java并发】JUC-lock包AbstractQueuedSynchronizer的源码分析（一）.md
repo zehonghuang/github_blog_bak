@@ -123,14 +123,15 @@ static final class Node {
 
   //取消状态
   static final int CANCELLED =  1;
-  //等待触发，即抢占不到锁被挂起
+  //等待触发，即抢占不到锁被挂起；
+  //需要注意的事，head是锁的持有人，此时依然处于该状态，只有释放锁时waitStatus=0
   static final int SIGNAL    = -1;
   //等待条件符合，需要等待Condition的signal唤醒，Lock提供了newCondition()，作用跟Object的wait()与notify()是一样的
   static final int CONDITION = -2;
   //节点状态向后传递，在共享锁有用处
   static final int PROPAGATE = -3;
 
-  //挂起的状态
+  //挂起的状态，aitStatus=0表明释放锁
   volatile int waitStatus;
   volatile Node prev;
   volatile Node next;
@@ -249,13 +250,12 @@ private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
 
 ```
 
-
+嗯，好的，上面实在公平锁的分析，下面非公平锁只是比`FairSync`的lock()多了两句代码。调用lock的时候，不是跟公平锁一样乖乖到队列中等待，而是先重试抢占锁，把state设置1，将自己设为持有锁线程。如果lock失败了，还会在tryAcquire再一次抢占，再失败则进入等待队列。
 ``` java
 static final class NonfairSync extends Sync {
   private static final long serialVersionUID = 7316153563782823691L;
 
   final void lock() {
-    //
     if (compareAndSetState(0, 1))
         setExclusiveOwnerThread(Thread.currentThread());
     else
@@ -265,5 +265,55 @@ static final class NonfairSync extends Sync {
   protected final boolean tryAcquire(int acquires) {
     return nonfairTryAcquire(acquires);
   }
+}
+```
+
+最后来到释放锁，unlock()则是调用到AQS的release方法，tryRelease是AQS的空方法，具体实现在ReentrantLock内部类Sync。
+``` java
+public final boolean release(int arg) {
+  //尝试释放锁，tryRelease具体实现需要关注子类
+  if (tryRelease(arg)) {
+    //如果head不为空，且未表明被标记已释放锁，则唤醒下一个节点
+    Node h = head;
+    if (h != null && h.waitStatus != 0)
+      //尝试唤醒下一个节点
+      unparkSuccessor(h);
+    return true;
+  }
+  return false;
+}
+
+private void unparkSuccessor(Node node) {
+  int ws = node.waitStatus;
+  if (ws < 0)
+    compareAndSetWaitStatus(node, ws, 0);
+  Node s = node.next;
+  if (s == null || s.waitStatus > 0) {
+    s = null;
+    //从尾部扫描，直到找到与head最近的一个等待线程
+    for (Node t = tail; t != null && t != node; t = t.prev)
+      if (t.waitStatus <= 0)
+        s = t;
+  }
+  //被唤醒的线程将在acquireQueued方法重新设置head，并把该节点从链表移除
+  if (s != null)
+    LockSupport.unpark(s.thread);
+}
+
+/*
+ * ReentrantLock内部类Sync的实现
+ */
+protected final boolean tryRelease(int releases) {
+  int c = getState() - releases;
+  if (Thread.currentThread() != getExclusiveOwnerThread())
+    throw new IllegalMonitorStateException();
+  boolean free = false;
+  //当state=0是，说明锁已经处于空闲状态，将当前持有锁线程置空
+  if (c == 0) {
+    free = true;
+    setExclusiveOwnerThread(null);
+  }
+  setState(c);
+  return free;
 }
 ```
