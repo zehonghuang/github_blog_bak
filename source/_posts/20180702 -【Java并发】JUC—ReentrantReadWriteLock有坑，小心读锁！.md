@@ -19,9 +19,11 @@ tags:
 - 写线程随即尝试获取写锁，未成功，进入双列表进行等待
 - 随后读线程也进来了，要去拿读锁
 
-问题：优先得到锁的读线程执行时间长达73秒，该时段写线程等待是理所当然的，那读线程也应该能够得到读锁才对，因为是共享锁，是吧？但预警结果并不是如此，超时任务线程中大部分为读。
+问题：优先得到锁的读线程执行时间长达73秒，该时段写线程等待是理所当然的，那读线程也应该能够得到读锁才对，因为是共享锁，是吧？但预警结果并不是如此，超时任务线程中大部分为读。究竟是什么让读线程无法抢占到读锁，而导致响应超时呢？
 
 把场景简化为如下的测试代码：读——写——读 线程依次尝试获取ReadWriteLock，用空转替换执行时间过长。
+
+执行结果：控制台仅打印出`Thread[读线程 -- 1,5,main]`，既是说`读线程 -- 2`并没有抢占到读锁，跟上诉的表现似乎一样。
 
 ``` Java
 public class ReadWriteLockTest {
@@ -105,7 +107,7 @@ public class ReadWriteLockTest {
     }
   }
 }
-
 ```
+我们用`jstack`查看一下线程，看到读线程2和写线程1确实处于WAITING的状态。
 
-![jstack](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/jstack.png)
+![jstack](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/jstack.png-50pencent)
