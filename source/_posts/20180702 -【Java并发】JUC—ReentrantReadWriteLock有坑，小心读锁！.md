@@ -111,3 +111,69 @@ public class ReadWriteLockTest {
 我们用`jstack`查看一下线程，看到读线程2和写线程1确实处于WAITING的状态。
 
 ![jstack](http://p4ygo03xz.bkt.clouddn.com/github-blog/image/jstack.png-50pencent)
+
+排查项目后，业务代码并没有问题，转而看下ReentrantReadWriteLock或AQS是否有什么问题被我忽略的。
+
+第一时间关注共享锁，因为独占锁的实现逻辑我确定很清晰了，很快我似乎看到自己想要的方法。
+``` Java
+public static class ReadLock implements Lock, java.io.Serializable {
+  public void lock() {
+    //if(tryAcquireShared(arg) < 0) doAcquireShared(arg);
+    sync.acquireShared(1);
+  }
+}
+abstract static class Sync extends AbstractQueuedSynchronizer {
+  protected final int tryAcquireShared(int unused) {
+    Thread current = Thread.currentThread();
+    int c = getState();
+    //计算stata，若独占锁被占，且持有锁非本线程，返回-1等待挂起
+    if (exclusiveCount(c) != 0 &&
+      getExclusiveOwnerThread() != current)
+      return -1;
+    //计算获取共享锁的线程数
+    int r = sharedCount(c);
+    //readerShouldBlock检查读线程是否要阻塞
+    if (!readerShouldBlock() &&
+      //线程数必须少于65535
+      r < MAX_COUNT &&
+      //符合上诉两个条件，CAS(r, r+1)
+      compareAndSetState(c, c + SHARED_UNIT)) {
+      //下面的逻辑就不说了，很简单
+      if (r == 0) {
+        firstReader = current;
+        firstReaderHoldCount = 1;
+      } else if (firstReader == current) {
+        firstReaderHoldCount++;
+      } else {
+        HoldCounter rh = cachedHoldCounter;
+        if (rh == null || rh.tid != getThreadId(current))
+          cachedHoldCounter = rh = readHolds.get();
+        else if (rh.count == 0)
+          readHolds.set(rh);
+        rh.count++;
+      }
+      return 1;
+    }
+    return fullTryAcquireShared(current);
+  }
+}
+```
+嗯，没错，方法`readerShouldBlock()`十分瞩目，几乎不用看上下文就定位到该方法。因为默认非公平锁，所以
+``` Java
+static final class NonfairSync extends Sync {
+  final boolean writerShouldBlock() {
+      return false;
+  }
+  final boolean readerShouldBlock() {
+    return apparentlyFirstQueuedIsExclusive();
+  }
+}
+//下面方法在ASQ中
+final boolean apparentlyFirstQueuedIsExclusive() {
+  Node h, s;
+  return (h = head) != null &&
+      (s = h.next)  != null &&
+      !s.isShared()         &&
+      s.thread != null;
+}
+```
