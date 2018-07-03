@@ -7,6 +7,8 @@ tags:
   - 同步
   - 读写锁
   - 线程饥渴
+categories:
+  - java并发编程
 ---
 
 好长一段时间前，某写场景需要JUC的读写锁，但在某个时刻内读写线程都报超时预警（长时间无响应），看起来像是锁竞争过程中出现死锁（我猜）。经过排查项目并没有能造成死锁的可以之处，因为业务代码并不复杂（仅仅是一个计算过程），经几番折腾，把注意力转移到JDK源码，正文详细说下ReentrantReadWriteLock的隐藏坑点。
@@ -158,7 +160,7 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
   }
 }
 ```
-嗯，没错，方法`readerShouldBlock()`十分瞩目，几乎不用看上下文就定位到该方法。因为默认非公平锁，所以
+嗯，没错，方法`readerShouldBlock()`十分瞩目，几乎不用看上下文就定位到该方法。因为默认非公平锁，所以直接关注NonfairSync。
 ``` Java
 static final class NonfairSync extends Sync {
   final boolean writerShouldBlock() {
@@ -171,9 +173,16 @@ static final class NonfairSync extends Sync {
 //下面方法在ASQ中
 final boolean apparentlyFirstQueuedIsExclusive() {
   Node h, s;
-  return (h = head) != null &&
-      (s = h.next)  != null &&
-      !s.isShared()         &&
-      s.thread != null;
+  return (h = head) != null && //head非空
+      (s = h.next)  != null && //后续节点非空
+      !s.isShared()         && //后续节点是否为写线程
+      s.thread != null;        //后续节点线程非空
 }
 ```
+`apparentlyFirstQueuedIsExclusive`什么作用，检查持锁线程head后续节点s是否为写锁，若真则返回true。结合`tryAcquireShared`的逻辑，如果true意味着读线程会被挂起无法共享锁。
+
+这好像就说得通了，当持锁的是读线程时，跟随其后的是一个写线程，那么再后面来的读线程是无法获取读锁的，只有等待写线程执行完后，才能竞争。
+
+这是jdk为了避免写线程过分饥渴，而做出的策略。但有坑点就是，如果某一读线程执行时间过长，甚至陷入死循环，后续线程会无限期挂起，严重程度堪比死锁。为避免这种情况，除了确保读线程不会有问题外，尽量用`tryLock`，超时我们可以做出响应。
+
+当然也可以自己实现ReentrantReadWriteLock的读写锁竞争策略，但还是算了吧，遇到读远多于写的场景时，写线程饥渴带来的麻烦更大，表示踩过坑，别介。
