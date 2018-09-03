@@ -113,3 +113,83 @@ resources/META-INF/dubbo/internal/com.hongframe.extension.TestActivateExt
 active1=com.hongframe.extension.impl.TestActivateExtImpl1
 active2=com.hongframe.extension.impl.TestActivateExtImpl2
 ```
+
+- 正题，源码分析
+
+Dubbo为每个拓展点准备一个ExtensionLoader，将DUBBO_INTERNAL_DIRECTORY、SERVICES_DIRECTORY下的配置文件全部缓存到以下成员变量中。
+
+
+``` java
+public class ExtensionLoader<T> {
+  //一个拓展点一个ExtensionLoader
+  private static final ConcurrentMap<Class<?>, ExtensionLoader<?>> EXTENSION_LOADERS = new ConcurrentHashMap<Class<?>, ExtensionLoader<?>>();
+  //拓展点实现类的实例化
+  private static final ConcurrentMap<Class<?>, Object> EXTENSION_INSTANCES = new ConcurrentHashMap<Class<?>, Object>();
+
+  // ==============================
+  //拓展点
+  private final Class<?> type;
+  private final ExtensionFactory objectFactory;
+  //缓存拓展点实现的名称
+  private final ConcurrentMap<Class<?>, String> cachedNames = new ConcurrentHashMap<Class<?>, String>();
+  //缓存拓展点的实现类
+  private final Holder<Map<String, Class<?>>> cachedClasses = new Holder<Map<String, Class<?>>>();
+  //实现类的Activate注解配置
+  private final Map<String, Activate> cachedActivates = new ConcurrentHashMap<String, Activate>();
+  private final ConcurrentMap<String, Holder<Object>> cachedInstances = new ConcurrentHashMap<String, Holder<Object>>();
+  //至关重要的，通过代码注入后得到实例化
+  private final Holder<Object> cachedAdaptiveInstance = new Holder<Object>();
+  //拓展点实现类被声明为Adaptive，至多一个
+  private volatile Class<?> cachedAdaptiveClass = null;
+  //SPI("cachedDefaultName") 默认实现类key值
+  private String cachedDefaultName;
+  private volatile Throwable createAdaptiveInstanceError;
+  //拓展点包装类
+  private Set<Class<?>> cachedWrapperClasses;
+
+  public static <T> ExtensionLoader<T> getExtensionLoader(Class<T> type) {
+    if (type == null)
+      //非空
+    if (!type.isInterface()) {
+      //必须是接口
+    }
+    if (!withExtensionAnnotation(type)) {
+        //必须声明@SPI
+    }
+    ExtensionLoader<T> loader = (ExtensionLoader<T>) EXTENSION_LOADERS.get(type);
+    if (loader == null) {
+        EXTENSION_LOADERS.putIfAbsent(type, new ExtensionLoader<T>(type));
+        loader = (ExtensionLoader<T>) EXTENSION_LOADERS.get(type);
+    }
+    return loader;
+  }
+}
+```
+
+`getAdaptiveExtension`获取拓展点实例化对象。
+
+``` java
+public T getAdaptiveExtension() {
+  Object instance = cachedAdaptiveInstance.get();
+  if (instance == null) {
+    if (createAdaptiveInstanceError == null) {
+      synchronized (cachedAdaptiveInstance) {
+        instance = cachedAdaptiveInstance.get();
+        if (instance == null) {
+          try {
+            instance = createAdaptiveExtension();
+            cachedAdaptiveInstance.set(instance);
+          } catch (Throwable t) {
+            createAdaptiveInstanceError = t;
+            throw new IllegalStateException("fail to create adaptive instance: " + t.toString(), t);
+          }
+        }
+      }
+    } else {
+      throw new IllegalStateException("fail to create adaptive instance: " + createAdaptiveInstanceError.toString(), createAdaptiveInstanceError);
+    }
+  }
+
+  return (T) instance;
+}
+```
