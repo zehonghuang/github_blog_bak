@@ -1,5 +1,5 @@
 ---
-title: 20180902 -【Dubbo源码分析】SPI机制，将URL与可插拔拓展融合到极致
+title: 【Dubbo源码分析】SPI机制，将URL与可插拔拓展融合到极致
 date: 2018-09-02 16:01:41
 tags:
   - java　
@@ -166,7 +166,7 @@ public class ExtensionLoader<T> {
 }
 ```
 
-`getAdaptiveExtension`获取拓展点实例化对象。
+`getAdaptiveExtension`获取拓展点实例化对象，这里会动态实例化一个拓展点实现，将其set入Holder，这个对象包装了拓展点基础的实现类，成为一个动态代理。
 
 ``` java
 public T getAdaptiveExtension() {
@@ -177,6 +177,7 @@ public T getAdaptiveExtension() {
         instance = cachedAdaptiveInstance.get();
         if (instance == null) {
           try {
+            //创建Adaptive拓展点接口的实例对象
             instance = createAdaptiveExtension();
             cachedAdaptiveInstance.set(instance);
           } catch (Throwable t) {
@@ -186,10 +187,51 @@ public T getAdaptiveExtension() {
         }
       }
     } else {
-      throw new IllegalStateException("fail to create adaptive instance: " + createAdaptiveInstanceError.toString(), createAdaptiveInstanceError);
+      //IllegalStateException
     }
   }
-
   return (T) instance;
+}
+
+private T createAdaptiveExtension() {
+  try {
+    //向拓展点的成员变量注入对象
+    return injectExtension(
+        //加载，动态生成code，编译，实例化
+        (T) getAdaptiveExtensionClass().newInstance());
+  } catch (Exception e) {
+    throw new IllegalStateException("Can not create adaptive extension " + type + ", cause: " + e.getMessage(), e);
+  }
+}
+private Class<?> getAdaptiveExtensionClass() {
+  //加载成员变量type指定的配置文件
+  getExtensionClasses();
+  if (cachedAdaptiveClass != null) {
+    return cachedAdaptiveClass;
+  }
+  //初始化：生成拓展点实现类代码，以TestAdaptiveExt为例
+  return cachedAdaptiveClass = createAdaptiveExtensionClass();
+}
+```
+
+`createAdaptiveExtensionClass()`方法生成的TestAdaptiveExt实现类，详细逻辑自行阅读`createAdaptiveExtensionClassCode()`。
+``` java
+package com.hongframe.extension;
+
+import com.alibaba.dubbo.common.extension.ExtensionLoader;
+
+public class TestAdaptiveExt$Adaptive implements com.hongframe.extension.TestAdaptiveExt {
+
+public java.lang.String getChlidInfo(com.alibaba.dubbo.common.URL arg0) {
+
+	if (arg0 == null) throw new IllegalArgumentException("url == null");
+	com.alibaba.dubbo.common.URL url = arg0;
+	String extName = url.getParameter("key_name_1", url.getParameter("key_name_2"));
+	if(extName == null) throw new IllegalStateException("Fail to get extension(com.hongframe.extension.TestAdaptiveExt) name from url(" + url.toString() + ") use keys([key_name_1, key_name_2])");
+	com.hongframe.extension.TestAdaptiveExt extension =
+					(com.hongframe.extension.TestAdaptiveExt)ExtensionLoader
+								.getExtensionLoader(com.hongframe.extension.TestAdaptiveExt.class).getExtension(extName);
+	return extension.getChlidInfo(arg0);
+	}
 }
 ```
