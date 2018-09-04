@@ -104,8 +104,12 @@ public void testActivate() {
    * 此处，对于Activate，URI的key=value只能被key激活，但对相同key的Adaptive方法能达到组合效果
    * 参考CacheFilter与CacheFactory的用法
    */
+  /*
+   * 这里有个值得注意的地方：
+   * 如果给url添加key_name_1=<-default,...,...>作为参数的话，是不匹配Activate.value的，转而匹配配置文件中的key，例如active1，active2
+   */
   url = url.addParameter("key_name_1", "default_1");
-  List<TestActivateExt> testActivateExts = testActivateExtExtensionLoader.getActivateExtension(url, new String[]{});
+  List<TestActivateExt> testActivateExts = testActivateExtExtensionLoader.getActivateExtension(url, "key_name_1");
   for(TestActivateExt ext : testActivateExts)
    System.out.println(ext.print());
 }
@@ -366,18 +370,23 @@ String[] values, String group) {
               && !names.contains(Constants.REMOVE_VALUE_PREFIX + name)) {
           if (Constants.DEFAULT_KEY.equals(name)) {
               if (!usrs.isEmpty()) {
-                  exts.addAll(0, usrs);
-                  usrs.clear();
+                exts.addAll(0, usrs);
+                usrs.clear();
               }
           } else {
-              T ext = getExtension(name);
-              usrs.add(ext);
+            //注意，这里的name是配置文件中的key
+            T ext = getExtension(name);
+            usrs.add(ext);
           }
       }
   }
   if (!usrs.isEmpty()) {
-      exts.addAll(usrs);
+    exts.addAll(usrs);
   }
   return exts;
 }
 ```
+
+- 总结
+
+其实没多少可以总结的，dubbo的微内核其实就一个ExtensionLoader类，但弄清之后，可以较为清晰的研究dubbo各种功能的源码，因为其功能也是拓展点之一，只要找到对于实现即可。
