@@ -15,6 +15,9 @@ categories:
 是的，`ExtensionLoader、@SPI、@Adaptive、@Activate`可以说是Dubbo的核心，`Cluster、Protocol、Filter`等接口都被声明为SPI，什么作用呢？能根据配置动态调用被声明为SPI接口的实现类，dubbo提供了URL方式作为参数配置。
 
 ---
+
+其实SPI的应用跟实现逻辑是相当简单的，但很巧妙，正文的源码分析部分只罗列出主要方法，以及简单说明其作用。
+
 - 先来看@SPI
 
 每个要成为拓展点的接口都需要被声明SPI，ExtensionLoader只加载有该注解的接口，SPI可以设置一个默认值，指向META-INF中拓展点文件的key值，如果你在url所配的参数找不到会走默认。
@@ -233,5 +236,96 @@ public java.lang.String getChlidInfo(com.alibaba.dubbo.common.URL arg0) {
 								.getExtensionLoader(com.hongframe.extension.TestAdaptiveExt.class).getExtension(extName);
 	return extension.getChlidInfo(arg0);
 	}
+}
+```
+
+下面是加载拓展点实现类的代码，主要通过META-INF里的配置文件找到相应的类。
+``` java
+private Map<String, Class<?>> getExtensionClasses() {
+  //省略单例双检代码
+  //
+  classes = loadExtensionClasses();
+  cachedClasses.set(classes);
+  return classes;
+}
+
+// synchronized in getExtensionClasses
+private Map<String, Class<?>> loadExtensionClasses() {
+  final SPI defaultAnnotation = type.getAnnotation(SPI.class);
+  if (defaultAnnotation != null) {
+    String value = defaultAnnotation.value();
+    if ((value = value.trim()).length() > 0) {
+      //至多一个默认拓展实现类名
+      String[] names = NAME_SEPARATOR.split(value);
+      if (names.length > 1) {
+        //IllegalStateException
+      }
+      if (names.length == 1) cachedDefaultName = names[0];
+    }
+  }
+
+  Map<String, Class<?>> extensionClasses = new HashMap<String, Class<?>>();
+  //load配置文件
+  //其中loadResource是很简单的词法解析器，loadClass则负责将实现类缓存在成员变量
+  loadDirectory(extensionClasses, DUBBO_INTERNAL_DIRECTORY);//"META-INF/dubbo/internal/"
+  loadDirectory(extensionClasses, DUBBO_DIRECTORY);//"META-INF/dubbo/"
+  loadDirectory(extensionClasses, SERVICES_DIRECTORY);//"META-INF/services/"
+  return extensionClasses;
+}
+
+private void loadClass(Map<String, Class<?>> extensionClasses, java.net.URL resourceURL,//抛异常用的，没什么实际用处
+Class<?> clazz,//配置文件中的value
+//配置文件中的key
+String name) throws NoSuchMethodException {
+  //是否拓展点type的实现类
+  if (!type.isAssignableFrom(clazz)) {
+    //IllegalStateException
+  }
+  //该拓展点实现类是否被声明为Adaptive
+  if (clazz.isAnnotationPresent(Adaptive.class)) {
+    if (cachedAdaptiveClass == null) {
+      cachedAdaptiveClass = clazz;
+    } else if (!cachedAdaptiveClass.equals(clazz)) {
+      //IllegalStateException，只能声明一个实现类
+    }
+    //是否为包装类
+  } else if (isWrapperClass(clazz)) {
+    Set<Class<?>> wrappers = cachedWrapperClasses;
+    if (wrappers == null) {
+      cachedWrapperClasses = new ConcurrentHashSet<Class<?>>();
+      wrappers = cachedWrapperClasses;
+    }
+    wrappers.add(clazz);
+  } else {
+    //这一步是加载被声明为Activate的实现累的
+    clazz.getConstructor();
+    if (name == null || name.length() == 0) {
+      //其中涉及到一个过期的注解@Extension
+      //如果配置文件没有设置key值，将实现类simplename作为默认
+      name = findAnnotationName(clazz);
+      if (name.length() == 0) {
+        //IllegalStateException
+      }
+    }
+    String[] names = NAME_SEPARATOR.split(name);
+    if (names != null && names.length > 0) {
+      Activate activate = clazz.getAnnotation(Activate.class);
+      if (activate != null) {
+        cachedActivates.put(names[0], activate);
+      }
+      for (String n : names) {
+        if (!cachedNames.containsKey(clazz)) {
+          cachedNames.put(clazz, n);
+        }
+        Class<?> c = extensionClasses.get(n);
+        if (c == null) {
+          //把不同key相同class全都塞进去
+          extensionClasses.put(n, clazz);
+        } else if (c != clazz) {
+          //IllegalStateException
+        }
+      }
+    }
+  }
 }
 ```
