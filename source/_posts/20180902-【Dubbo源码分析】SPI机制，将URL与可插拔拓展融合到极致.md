@@ -101,7 +101,7 @@ public void testActivate() {
   ExtensionLoader<TestActivateExt> testActivateExtExtensionLoader = ExtensionLoader.getExtensionLoader(TestActivateExt.class);
   URL url = URL.valueOf("test://localhost/test");
   /*
-   * 对于Activate，URI的key=value只能被key激活，但对相同key的Adaptive方法能达到组合效果
+   * 此处，对于Activate，URI的key=value只能被key激活，但对相同key的Adaptive方法能达到组合效果
    * 参考CacheFilter与CacheFactory的用法
    */
   url = url.addParameter("key_name_1", "default_1");
@@ -327,5 +327,57 @@ String name) throws NoSuchMethodException {
       }
     }
   }
+}
+```
+
+下面是获取Activate拓展实现的列表方法，通常这类拓展都是需要AOP来处理事情的，类似Filter接口。
+
+``` java
+public List<T> getActivateExtension(URL url,
+//url的param-key列表
+String[] values, String group) {
+  List<T> exts = new ArrayList<T>();
+  List<String> names = values == null ? new ArrayList<String>(0) : Arrays.asList(values);
+  //这部分从url中拿去参数，匹配符合条件的拓展点
+  //如果key=value，后者出现-default，则表示不走匹配URL的方式
+  if (!names.contains(Constants.REMOVE_VALUE_PREFIX + Constants.DEFAULT_KEY)) {
+    getExtensionClasses();
+    for (Map.Entry<String, Activate> entry : cachedActivates.entrySet()) {
+      String name = entry.getKey();
+      Activate activate = entry.getValue();
+      if (isMatchGroup(group, activate.group())) {
+        T ext = getExtension(name);
+        if (!names.contains(name)
+              && !names.contains(Constants.REMOVE_VALUE_PREFIX + name)
+              && isActive(activate, url)) {
+          exts.add(ext);
+        }
+      }
+    }
+    //根据before、after、order优先级依次排序
+    Collections.sort(exts, ActivateComparator.COMPARATOR);
+  }
+  //遍历values给到的参数
+  List<T> usrs = new ArrayList<T>();
+  for (int i = 0; i < names.size(); i++) {
+      String name = names.get(i);
+      //跳过被标记-的拓展点
+      if (!name.startsWith(Constants.REMOVE_VALUE_PREFIX)
+              && !names.contains(Constants.REMOVE_VALUE_PREFIX + name)) {
+          if (Constants.DEFAULT_KEY.equals(name)) {
+              if (!usrs.isEmpty()) {
+                  exts.addAll(0, usrs);
+                  usrs.clear();
+              }
+          } else {
+              T ext = getExtension(name);
+              usrs.add(ext);
+          }
+      }
+  }
+  if (!usrs.isEmpty()) {
+      exts.addAll(usrs);
+  }
+  return exts;
 }
 ```
