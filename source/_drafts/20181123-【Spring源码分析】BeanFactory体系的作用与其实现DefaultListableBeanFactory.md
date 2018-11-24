@@ -28,7 +28,7 @@ categories:
 public interface BeanFactory {
   //FactoryBean的转义附，一种在Spring中特色的Bean，后头会讲到
   //这里未被转义的都是我们认知的普通Bean
-	String FACTORY_BEAN_PREFIX = "&";
+  String FACTORY_BEAN_PREFIX = "&";
   /*
    * 以下提供了5种获取Bean的方法：
    * 1、通过BeanName，在获取xml中的bean id时比较常用，常常id唯一
@@ -39,31 +39,31 @@ public interface BeanFactory {
    * 带构造方法参数的获取方法，一般用在not-singleton的Bean
    * 具体可以看@Scope的说明
    */
-	Object getBean(String name) throws BeansException;
-	<T> T getBean(String name, Class<T> requiredType) throws BeansException;
-	Object getBean(String name, Object... args) throws BeansException;
-	<T> T getBean(Class<T> requiredType) throws BeansException;
-	<T> T getBean(Class<T> requiredType, Object... args) throws BeansException;
+   Object getBean(String name) throws BeansException;
+   T> T getBean(String name, Class<T> requiredType) throws BeansException;
+   Object getBean(String name, Object... args) throws BeansException;
+   <T> T getBean(Class<T> requiredType) throws BeansException;
+   <T> T getBean(Class<T> requiredType, Object... args) throws BeansException;
 
   /*
    * ObjectProvider是spring 4.3提供的注入方式，针对构造方法依赖注入做的可选方式
    */
-	<T> ObjectProvider<T> getBeanProvider(Class<T> requiredType);
-	<T> ObjectProvider<T> getBeanProvider(ResolvableType requiredType);
+   <T> ObjectProvider<T> getBeanProvider(Class<T> requiredType);
+   <T> ObjectProvider<T> getBeanProvider(ResolvableType requiredType);
 
   //查找是否存在Bean，本容器没有，会往上一层继续找
-	boolean containsBean(String name);
+  boolean containsBean(String name);
   //是否单例
-	boolean isSingleton(String name) throws NoSuchBeanDefinitionException;
+  boolean isSingleton(String name) throws NoSuchBeanDefinitionException;
   //是否原型
-	boolean isPrototype(String name) throws NoSuchBeanDefinitionException;
+  boolean isPrototype(String name) throws NoSuchBeanDefinitionException;
   //是否有匹配的类型
-	boolean isTypeMatch(String name, ResolvableType typeToMatch) throws NoSuchBeanDefinitionException;
-	boolean isTypeMatch(String name, Class<?> typeToMatch) throws NoSuchBeanDefinitionException;
+  boolean isTypeMatch(String name, ResolvableType typeToMatch) throws NoSuchBeanDefinitionException;
+  boolean isTypeMatch(String name, Class<?> typeToMatch) throws NoSuchBeanDefinitionException;
 
-	@Nullable
-	Class<?> getType(String name) throws NoSuchBeanDefinitionException;
-	String[] getAliases(String name);
+  @Nullable
+  Class<?> getType(String name) throws NoSuchBeanDefinitionException;
+  String[] getAliases(String name);
 
 }
 ```
