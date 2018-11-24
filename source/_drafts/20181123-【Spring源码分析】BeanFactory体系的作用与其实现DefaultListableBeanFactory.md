@@ -6,52 +6,63 @@ tags:
   - Spring
   - AOP
   - IOC控制反转
+  - BeanFactory
 categories:
     - Spring源码分析
 ---
 
-dd
+最近静下心开始研读spring源码，从容器开始，直入眼帘的就是BeanFactory这个终极boss。通过BeanFactory及其子接口能得知不同的注入方式与获取方式，在尝试拓展自己的实例化时，有必要的用处。
 
 ---
 
+先看看`BeanFactory`的最终实现类`DefaultListableBeanFactory`，生成出来的类关系图，看起来相当的复杂。本文暂且只讨论`BeanFactory`本身，与一代子接口`AutowireCapableBeanFactory`、`HierarchicalBeanFactory`、`ListableBeanFactory`，还有个`ConfigurableBeanFactory`实在不想展开讲，东西有点多。
 
 ![DefaultListableBeanFactory类图](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/DefaultListableBeanFactory.png)
 
 
-- BeanFactory
+- BeanFactory顶级父类
+
+作为顶级接口，提供了工厂的一切基本操作，获取实例、判断实例种类、类型、是否存在
 
 ``` Java
 public interface BeanFactory {
-
+  //FactoryBean的转义附，一种在Spring中特色的Bean，后头会讲到
+  //这里未被转义的都是我们认知的普通Bean
 	String FACTORY_BEAN_PREFIX = "&";
-
+  /*
+   * 以下提供了5种获取Bean的方法：
+   * 1、通过BeanName，在获取xml中的bean id时比较常用，常常id唯一
+   * 2、通过BeanName与类型，通过类型校验，避免同名不同类的错误
+   * 3、通过BeanName与构造方法参数获取
+   * 4、通过类型获取，依然有可能出现多Bean的错误
+   * 5、通过类型与构造方法参数获取
+   * 带构造方法参数的获取方法，一般用在not-singleton的Bean
+   * 具体可以看@Scope的说明
+   */
 	Object getBean(String name) throws BeansException;
-
 	<T> T getBean(String name, Class<T> requiredType) throws BeansException;
-
 	Object getBean(String name, Object... args) throws BeansException;
-
 	<T> T getBean(Class<T> requiredType) throws BeansException;
-
 	<T> T getBean(Class<T> requiredType, Object... args) throws BeansException;
 
+  /*
+   * ObjectProvider是spring 4.3提供的注入方式，针对构造方法依赖注入做的可选方式
+   */
 	<T> ObjectProvider<T> getBeanProvider(Class<T> requiredType);
-
 	<T> ObjectProvider<T> getBeanProvider(ResolvableType requiredType);
 
+  //查找是否存在Bean，本容器没有，会往上一层继续找
 	boolean containsBean(String name);
-
+  //是否单例
 	boolean isSingleton(String name) throws NoSuchBeanDefinitionException;
-
+  //是否原型
 	boolean isPrototype(String name) throws NoSuchBeanDefinitionException;
-
+  //是否有匹配的类型
 	boolean isTypeMatch(String name, ResolvableType typeToMatch) throws NoSuchBeanDefinitionException;
-
 	boolean isTypeMatch(String name, Class<?> typeToMatch) throws NoSuchBeanDefinitionException;
 
 	@Nullable
 	Class<?> getType(String name) throws NoSuchBeanDefinitionException;
-
 	String[] getAliases(String name);
 
 }
