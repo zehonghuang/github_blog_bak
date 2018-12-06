@@ -16,7 +16,8 @@ date: 2016-04-30 02:35:55
     - Dispatcher
   - Spirng源码分析
     - ApplicationContext体系
-    - ～～BeanFactory体系～～
+    - ~~BeanFactory体系~~
+    - BeanFactory生命周期
     - FactoryBean，配置向的Bean
     - Spring拓展与集成自定义框架指南
   - 线程
