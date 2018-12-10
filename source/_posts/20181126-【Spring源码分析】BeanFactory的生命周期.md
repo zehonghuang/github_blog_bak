@@ -14,11 +14,19 @@ categories:
 
 ---
 
+两级别生命周期：
+  - 容器级别
+    - BeanFactoryPostProcessor
+    - BeanDefinitionRegistryPostProcessor
+    - 调用实现逻辑
+
+      PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors
+  - Bean级别
+
 - InstantiationAwareBeanPostProcessor
-sdasd
+
   - postProcessBeforeInstantiation
-  sdasd
+
   - postProcessAfterInstantiation
-  sdasd
+
   - postProcessProperties
-  sdasd
