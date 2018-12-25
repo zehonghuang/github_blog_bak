@@ -1,0 +1,35 @@
+- 涉及的Linux知识
+  - 文件描述符
+  - socket编程
+    - socket()
+    - listen()
+    - accpet()
+    - read() & write()
+  - 文件IO编程
+    - open()
+    - read() & write()
+    - lseek()
+  - 多路复用IO
+    - select - windows
+    - epoll
+      - epoll_create()
+      - epoll_ctl()
+      - epoll_wait()
+    - kqueue
+      - kqueue()
+      - kevent()
+
+- NIO源码
+  - Selector
+    - EPollSelectorImpl
+    - KqueueSelectorImpl
+  - Channels
+    - 接口类型及其作用
+    - 网络IO相关实现及其分析
+      - ServerSocketChannel
+      - SocketChannel
+    - 文件IO
+      - FileChannel
+  - ByteBuffer
+    - DirectByteBuffer
+    - HeapByteBuffer

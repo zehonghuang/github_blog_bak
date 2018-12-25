@@ -19,7 +19,6 @@ categories:
     - BeanFactoryPostProcessor
     - BeanDefinitionRegistryPostProcessor
     - 调用实现逻辑
-
       PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors
   - Bean级别
 
