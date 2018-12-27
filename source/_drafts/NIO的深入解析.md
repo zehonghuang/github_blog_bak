@@ -27,6 +27,12 @@ categories:
 #### JVM内存结构 & 虚拟地址空间
 
 
+#### socket编程
+- socket()
+- listen()
+- accpet()
+- read() & write()
+- 示例代码
 
 - 涉及的Linux知识
   - 文件描述符
