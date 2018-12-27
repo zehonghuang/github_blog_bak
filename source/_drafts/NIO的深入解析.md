@@ -27,6 +27,10 @@ categories:
 #### JVM内存结构 & 虚拟地址空间
 ![jvm内存虚拟地址](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/jvm%E8%99%9A%E6%8B%9F%E5%86%85%E5%AD%98%E5%9C%B0%E5%9D%80.png)
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> bdd84b1ae8f472096b2b9beda90a33e61e06c0cb
 #### socket编程
 - socket()
 - listen()
