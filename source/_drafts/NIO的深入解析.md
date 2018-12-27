@@ -25,8 +25,14 @@ categories:
 任意对设备的操作都是默认为阻塞的，如果没有或有不可操作的资源，会被添加到`wait_queue_head_t`中进行等待，直到被`semaphore`通知允许执行。此时可以通过`fcntl()`函数将文件描述符设置为非阻塞，若没有或有不可操作的资源，立即返回错误信息。
 
 #### JVM内存结构 & 虚拟地址空间
+![jvm内存虚拟地址](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/jvm%E8%99%9A%E6%8B%9F%E5%86%85%E5%AD%98%E5%9C%B0%E5%9D%80.png)
 
-
+#### socket编程
+- socket()
+- listen()
+- accpet()
+- read() & write()
+- 示例代码
 
 - 涉及的Linux知识
   - 文件描述符
