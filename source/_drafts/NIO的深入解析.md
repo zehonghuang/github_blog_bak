@@ -55,10 +55,11 @@ int connect(int sd, struct sockaddr *server, int addr_len);
 ```c
 int write(int fd, void *buf, size_t nbytes);
 int read(int fd, void *buf, size_t nbytes);
-//MSG_DONTROUTE
-//MSG_OOB
-//MSG_PEEK
-//MSG_WAITALL
+//flags：
+//MSG_DONTROUTE 本地网络，不需查找路由
+//MSG_OOB TCP URG紧急指针，多用于心跳
+//MSG_PEEK  只读不取，数据保留在缓冲区
+//MSG_WAITALL 等待到满足指定条件才返回，在此之前会一直阻塞
 int recv(int sockfd,void *buf,int len,int flags);
 int send(int sockfd,void *buf,int len,int flags);
 ```
