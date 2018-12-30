@@ -32,34 +32,41 @@ categories:
 ![jvm内存虚拟地址](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/jvm%E8%99%9A%E6%8B%9F%E5%86%85%E5%AD%98%E5%9C%B0%E5%9D%80.png)
 
 #### socket编程
-- socket()
-- listen()
-- accpet()
-- read() & write()
-- 示例代码
 
-- 涉及的Linux知识
-  - 文件描述符
-    - 设备的阻塞与非阻塞
-  - JVM内存结构 & 虚拟地址空间
-  - socket编程
-    - socket()
-    - listen()
-    - accpet()
-    - read() & write()
-  - 文件IO编程
-    - open()
-    - read() & write()
-    - lseek()
-  - 多路复用IO
-    - select - windows
-    - epoll
-      - epoll_create()
-      - epoll_ctl()
-      - epoll_wait()
-    - kqueue
-      - kqueue()
-      - kevent()
+先回顾一下几个相关函数，JVM相关实现可以看Net.c源码，这里不做赘述。
+``` c
+// domain : AF_UNIX|AF_LOCAL 本地传输，AF_INET|AF_INET6  ipv4/6传输
+// type : SOCK_STREAM -> TCP, SOCK_DGRAM -> UDP
+// protocol : 0 系统默认
+// return : socket fd
+int socket(int domain, int type, int protocol);
+//sockfd : socket retuen fd
+//addr : sockaddr_in{sin_family=AF_INET -> ipv4,s_addr -> ip地址,sin_port -> 端口号}
+//addrlen : sockaddr的长度
+int bind(int sockfd, struct sockaddr* addr, int addrlen);
+//backlog : 最大连接数， syn queue + accpet queue 的大小
+int listen(int sockfd, int backlog);
+//同bind()的参数
+int accept(int sockfd, struct sockaddr addr, socklen_t addrlen);
+int connect(int sd, struct sockaddr *server, int addr_len);
+```
+另，socketIO可以使用`read & write`，和`recv & send`两种函数，后者多了一个参数flags。
+注，阻塞非阻塞模式，以下函数返回值有所区别。
+```c
+int write(int fd, void *buf, size_t nbytes);
+int read(int fd, void *buf, size_t nbytes);
+//MSG_DONTROUTE
+//MSG_OOB
+//MSG_PEEK
+//MSG_WAITALL
+int recv(int sockfd,void *buf,int len,int flags);
+int send(int sockfd,void *buf,int len,int flags);
+```
+
+#### IO多路复用
+##### epoll
+##### kqueue
+
 
 - NIO源码
   - Selector
