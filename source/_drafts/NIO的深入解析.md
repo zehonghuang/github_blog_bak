@@ -55,7 +55,7 @@ int connect(int sd, struct sockaddr *server, int addr_len);
 ```c
 int write(int fd, void *buf, size_t nbytes);
 int read(int fd, void *buf, size_t nbytes);
-//flags：
+//flags：这里没打算展开讲，自行google
 //MSG_DONTROUTE 本地网络，不需查找路由
 //MSG_OOB TCP URG紧急指针，多用于心跳
 //MSG_PEEK  只读不取，数据保留在缓冲区
@@ -65,7 +65,32 @@ int send(int sockfd,void *buf,int len,int flags);
 ```
 
 #### IO多路复用
+
+NIO在不同操作系统提供了不同实现，win-select，linux-epoll以及mac-kqueue，本文忽略windows平台，只说linux & mac下的实现。
+
 ##### epoll
+不太想讲epoll跟select的区别，网上多的是，不过唯一要说epoll本身是fd，很多功能都基于此，也不需要select一样重复实例化，下面的kqueue也是一样。
+首先是epoll是个文件，所以有可能被其他epoll/select/poll监听，所以可能会出现循环或反向路径，内核实现极其复杂冗长，有兴趣可以啃下`ep_loop_check`和`reverse_path_check`，我图论学得不好，看不下去。
+```c
+typedef union epoll_data {
+  void *ptr;
+  int fd; //希望被监听的事件
+  __uint32_t u32;
+  __uint64_t u64;
+} epoll_data_t;
+
+struct epoll_event {
+  __uint32_t events;
+  //EPOLLOUT：TL，缓冲池为空
+  //EPOLLIN：TL，缓冲池为满
+  //EPOLLET：EL，缓冲池有所变化
+  epoll_data_t data;
+};
+int epoll_create(int size);
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
+```
+
 ##### kqueue
 
 
