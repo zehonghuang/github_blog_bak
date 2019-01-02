@@ -51,6 +51,7 @@ int accept(int sockfd, struct sockaddr addr, socklen_t addrlen);
 int connect(int sd, struct sockaddr *server, int addr_len);
 ```
 另，socketIO可以使用`read & write`，和`recv & send`两种函数，后者多了一个参数flags。
+
 注，阻塞非阻塞模式，以下函数返回值有所区别。
 ```c
 int write(int fd, void *buf, size_t nbytes);
@@ -70,11 +71,12 @@ NIO在不同操作系统提供了不同实现，win-select，linux-epoll以及ma
 
 ##### epoll
 不太想讲epoll跟select的区别，网上多的是，不过唯一要说epoll本身是fd，很多功能都基于此，也不需要select一样重复实例化，下面的kqueue也是一样。
+
 首先是epoll是个文件，所以有可能被其他epoll/select/poll监听，所以可能会出现循环或反向路径，内核实现极其复杂冗长，有兴趣可以啃下`ep_loop_check`和`reverse_path_check`，我图论学得不好，看不下去。
 ```c
 typedef union epoll_data {
-  void *ptr;
-  int fd; //希望被监听的事件
+  void *ptr; //如果需要，可以携带自定义数据
+  int fd; //被监听的事件
   __uint32_t u32;
   __uint64_t u64;
 } epoll_data_t;
@@ -83,13 +85,24 @@ struct epoll_event {
   __uint32_t events;
   //EPOLLOUT：TL，缓冲池为空
   //EPOLLIN：TL，缓冲池为满
-  //EPOLLET：EL，缓冲池有所变化
+  //EPOLLET：EL，缓冲池即空or刚有数据
+  //还有其他，不一一列出了
   epoll_data_t data;
 };
+//size : 可监听的最大数目，后来2.6.8开始，此参数无效
+//return : epoll fd
 int epoll_create(int size);
+//op : EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL 分别是新增修改删除fd
+//fd : 被监听的事件
+//event : 上面的struct
 int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+//events : 就绪事件的数组
+//maxevents : 能被处理的最大事件数
+//timeout : 0 非阻塞，-1 阻塞，>0 等待超时
 int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 ```
+
+值得注意的是，epoll的边沿模式(EL)和水平模式(TL)，
 
 ##### kqueue
 
