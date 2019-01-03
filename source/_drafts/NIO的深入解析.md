@@ -14,6 +14,8 @@ categories:
 
 ---
 
+因为NIO本身的实现很多牵扯到操作系统，所以需要先稍微过一下，有理解不对的地方，请指出。
+
 ### 涉及的Linux知识
 
 #### 文件描述符
@@ -107,11 +109,25 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 `EL`只在中断信号来临时反馈，所以`buffer cache`的数据未处理完，没有新数据到来是不会通知就绪的。
 `TL`则是会查看`buffer cache`是否还有数据，只要没有被处理完，会继续通知就绪。
 
-一个关于这两种模式的问题，就EL模式是否必须把fd设置为NO_BLOCK。我不是很理解[Linux手册](http://man7.org/linux/man-pages/man7/epoll.7.html)中对EL的描述，为什么要和EL扯上关系，若是因为读写阻塞导致后续任务饥饿，那在TL是一样的后果。要我说，既然用了epoll，那就直接把fd设置未NO_BLOCK得了，就没那么多事。
+一个关于这两种模式的问题，就EL模式是否必须把fd设置为O_NONBLOCK。我不是很理解[Linux手册](http://man7.org/linux/man-pages/man7/epoll.7.html)中对EL的描述，为什么要和EL扯上关系，若是因为读写阻塞导致后续任务饥饿，那在TL是一样的后果。要我说，既然用了epoll，那就直接把fd设置为O_NONBLOCK得了，就没那么多事。
 
 对此我强烈建议写过一次linux下的网络编程，加强理解，这里不写示例了。
 
 ##### kqueue
+
+### NIO源码
+
+#### 多路复用们的包装类
+##### `EPollSelectorImpl` & `EPollSelectorWapper`
+##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
+
+#### Channels
+![Channel体系](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/Channel%E4%BD%93%E7%B3%BB.png)
+
+#### 接口类型及其作用
+#### 网络IO相关实现及其分析
+#### 文件IO
+
 
 
 - NIO源码
