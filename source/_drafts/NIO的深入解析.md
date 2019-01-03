@@ -85,7 +85,7 @@ struct epoll_event {
   __uint32_t events;
   //EPOLLOUT：TL，缓冲池为空
   //EPOLLIN：TL，缓冲池为满
-  //EPOLLET：EL，缓冲池即空or刚有数据
+  //EPOLLET：EL，有所变化
   //还有其他，不一一列出了
   epoll_data_t data;
 };
@@ -103,6 +103,13 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 ```
 
 值得注意的是，epoll的边沿模式(EL)和水平模式(TL)，
+
+`EL`只在中断信号来临时反馈，所以`buffer cache`的数据未处理完，没有新数据到来是不会通知就绪的。
+`TL`则是会查看`buffer cache`是否还有数据，只要没有被处理完，会继续通知就绪。
+
+一个关于这两种模式的问题，就EL模式是否必须把fd设置为NO_BLOCK。我不是很理解[Linux手册](http://man7.org/linux/man-pages/man7/epoll.7.html)中对EL的描述，为什么要和EL扯上关系，若是因为读写阻塞导致后续任务饥饿，那在TL是一样的后果。要我说，既然用了epoll，那就直接把fd设置未NO_BLOCK得了，就没那么多事。
+
+对此我强烈建议写过一次linux下的网络编程，加强理解，这里不写示例了。
 
 ##### kqueue
 
