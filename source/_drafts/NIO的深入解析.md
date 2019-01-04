@@ -117,6 +117,10 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 
 ### NIO源码
 
+#### 先来一个NIO网络通讯的示例
+``` java
+```
+
 #### 多路复用们的包装类
 ##### `EPollSelectorImpl` & `EPollSelectorWapper`
 ##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
@@ -128,19 +132,85 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 #### 网络IO相关实现及其分析
 #### 文件IO
 
+#### ByteBuffer体系
+
+从继承关系来看，其实并不复杂，数据结构也很简单，但对于`malloc`和`allocateDirect`分配的空间在进程虚拟内存所处的位置却很值得拿出来探讨一番，因为涉及NIO是否真实现了`零拷贝`，需要阅读少量的JVM源码一趟究竟。
+
+![ByteBuffer](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/ByteBuffer.png)
+
+##### Buffer的指针
+就是个对数组操作的容器，内部的指针也很容易理解，直接上图上源码，不多做解释。
 
 
-- NIO源码
-  - Selector
-    - EPollSelectorImpl
-    - KqueueSelectorImpl
-  - Channels
-    - 接口类型及其作用
-    - 网络IO相关实现及其分析
-      - ServerSocketChannel
-      - SocketChannel
-    - 文件IO
-      - FileChannel
-  - ByteBuffer
-    - DirectByteBuffer
-    - HeapByteBuffer
+![Buffer的指针](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/bytebuffer%E6%8C%87%E9%92%88.png)
+``` java
+public abstract class Buffer {
+  //标记读取or写入位置
+  private int mark = -1;
+  //已读已写的位置
+  private int position = 0;
+  //最大极限
+  private int limit;
+  //容器容量
+  private int capacity;
+  //重设位置
+  public final Buffer position(int newPosition) {
+    if ((newPosition > limit) || (newPosition < 0))
+      throw new IllegalArgumentException();
+    position = newPosition;
+    //标记位超过新位置，重置为-1
+    if (mark > position) mark = -1;
+    return this;
+  }
+  //与position(int)方法同理
+  public final Buffer limit(int newLimit) {
+    if ((newLimit > capacity) || (newLimit < 0))
+      throw new IllegalArgumentException();
+    limit = newLimit;
+    //如果位置超出新限制，则重合pos和limit
+    if (position > limit) position = limit;
+    if (mark > limit) mark = -1;
+    return this;
+  }
+}
+```
+
+#### ByteBuffer
+
+#### HeapByteBuffer
+``` java
+class HeapByteBuffer extends ByteBuffer {
+  HeapByteBuffer(int cap, int lim) {
+    super(-1, 0, lim, cap, new byte[cap], 0);
+  }
+}
+```
+#### DirectByteBuffer
+``` java
+class DirectByteBuffer extends MappedByteBuffer implements DirectBuffer {
+  DirectByteBuffer(int cap) {
+    super(-1, 0, cap, cap);
+    boolean pa = VM.isDirectMemoryPageAligned();
+    int ps = Bits.pageSize();
+    long size = Math.max(1L, (long)cap + (pa ? ps : 0));
+    Bits.reserveMemory(size, cap);
+
+    long base = 0;
+    try {
+      base = unsafe.allocateMemory(size);
+    } catch (OutOfMemoryError x) {
+      Bits.unreserveMemory(size, cap);
+      throw x;
+    }
+    unsafe.setMemory(base, size, (byte) 0);
+    if (pa && (base % ps != 0)) {
+      // Round up to page boundary
+      address = base + ps - (base & (ps - 1));
+    } else {
+      address = base;
+    }
+    cleaner = Cleaner.create(this, new Deallocator(base, size, cap));
+    att = null;
+  }
+}
+```
