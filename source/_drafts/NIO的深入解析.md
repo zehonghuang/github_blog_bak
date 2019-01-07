@@ -148,7 +148,56 @@ Server，`IOException`是要做处理的，我懒得写。[示例代码](https:/
 Client，`read()`同 Server。[示例代码](https://github.com/zehonghuang/github_blog_bak/blob/master/source/file/ClientDemo.java)
 
 #### 多路复用们的包装类
+
+我很想按照demo的代码顺序讲，但感觉NIO的实现几乎围绕着`SelectorImpl`写的，所以还是先来讲讲起子类与多路复用的包装类们。
 ##### `EPollSelectorImpl` & `EPollSelectorWapper`
+
+``` java
+class EPollSelectorImpl extends SelectorImpl {
+  //用于中断的pipe文件描述符，fd0:入口 fd1:出口
+  protected int fd0;
+  protected int fd1;
+  //epoll声明的JNI包装类
+  EPollArrayWrapper pollWrapper;
+  //fd -> selectionKey
+  private Map<Integer,SelectionKeyImpl> fdToKey;
+  //关闭selector，将会把所有文件描述符全部close并置为-1，implClose()可见
+  private volatile boolean closed = false;
+
+  private Object interruptLock = new Object();
+  private boolean interruptTriggered = false;
+
+  EPollSelectorImpl(SelectorProvider sp) {
+    super(sp);
+    long pipeFds = IOUtil.makePipe(false);
+    fd0 = (int) (pipeFds >>> 32);
+    fd1 = (int) pipeFds;
+    pollWrapper = new EPollArrayWrapper();
+    pollWrapper.initInterrupt(fd0, fd1);
+    fdToKey = new HashMap<Integer,SelectionKeyImpl>();
+  }
+}
+```
+
+EPollArrayWrapper的JNI代码，如下
+``` c
+JNIEXPORT jint JNICALL
+Java_sun_nio_ch_EPollArrayWrapper_epollWait(JNIEnv *env, jobject this,
+                                            jlong address, jint numfds,
+                                            jlong timeout, jint epfd)
+{
+  struct epoll_event *events = jlong_to_ptr(address);
+  int res;
+
+  if (timeout <= 0) {           /* Indefinite or no wait */
+    RESTARTABLE((*epoll_wait_func)(epfd, events, numfds, timeout), res);
+  } else {                      /* Bounded wait; bounded restarts */
+    res = iepoll(epfd, events, numfds, timeout);
+  }
+  //...
+  return res;
+}
+```
 ##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
 
 #### Channels
