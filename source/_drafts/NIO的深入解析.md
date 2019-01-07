@@ -114,6 +114,30 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 对此我强烈建议写过一次linux下的网络编程，加强理解，这里不写示例了。
 
 ##### kqueue
+全网关于kqueue的文章少之又少，特别是中文，描述得比较详细的只有这篇[《FreeBSD Kqueue的实现原理》](https://blog.csdn.net/mumumuwudi/article/details/47145801)，外文的就是发明者的论文和[FreeBSD手册](https://www.freebsd.org/cgi/man.cgi?query=kqueue&sektion=2&manpath=FreeBSD+5.0-current)了。kqueue的数据结构我并没有完全搞懂，懒得啃FreeBSD的实现（解压出来的源码有1.05g 手动微笑）。
+``` c
+//返回一个kqueue fd
+int kqueue(void);
+//用于注册、等待阻塞
+//changelist : 监听列表
+//nchanges : 监听数目
+//eventlist : 就绪列表
+//nevents : 就绪事件数目
+//timeout : 0 非阻塞，-1 阻塞，>0 等待超时
+int kevent(int kq, const struct kevent *changelist, int nchanges, struct kevent *eventlist, int nevents, const struct timespec *timeout);
+struct kevent {
+  //ident : 通常是个fd
+  uintpt_t ident;
+  //filter :
+  short filter; // filter for event
+  u_short flags; // action flags for kq
+  u_int fflags; // filter flag value
+  intptr_t data; // filter data value
+  void *udata; // opaque identifier
+}
+
+EV_SET(&kev, ident, filter, flags, fflags, data, udata);
+```
 
 ### NIO源码
 
@@ -134,7 +158,7 @@ int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout
 
 #### ByteBuffer体系
 
-从继承关系来看，其实并不复杂，数据结构也很简单，但对于`malloc`和`allocateDirect`分配的空间在进程虚拟内存所处的位置却很值得拿出来探讨一番，因为涉及NIO是否真实现了`零拷贝`，需要阅读少量的JVM源码一趟究竟。
+从继承关系来看，其实并不复杂，数据结构也很简单，但对于`malloc`和`allocateDirect`分配的空间在进程虚拟内存所处的位置却很值得拿出来探讨一番，因为涉及NIO是否真实现了`零拷贝`。
 
 ![ByteBuffer](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/ByteBuffer.png)
 
