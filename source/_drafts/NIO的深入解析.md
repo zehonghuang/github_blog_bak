@@ -154,7 +154,7 @@ Client，`read()`同 Server。[示例代码](https://github.com/zehonghuang/gith
 
 ``` java
 class EPollSelectorImpl extends SelectorImpl {
-  //用于中断的pipe文件描述符，fd0:入口 fd1:出口
+  //用于中断epoll阻塞的pipe文件描述符，fd0:入口 fd1:出口
   protected int fd0;
   protected int fd1;
   //epoll声明的JNI包装类
@@ -169,13 +169,68 @@ class EPollSelectorImpl extends SelectorImpl {
 
   EPollSelectorImpl(SelectorProvider sp) {
     super(sp);
-    long pipeFds = IOUtil.makePipe(false);
-    fd0 = (int) (pipeFds >>> 32);
-    fd1 = (int) pipeFds;
-    pollWrapper = new EPollArrayWrapper();
-    pollWrapper.initInterrupt(fd0, fd1);
-    fdToKey = new HashMap<Integer,SelectionKeyImpl>();
+    //...
   }
+
+  protected int doSelect(long timeout) throws IOException {
+    if (closed)
+      throw new ClosedSelectorException();
+    processDeregisterQueue();
+    try {
+      begin();
+      pollWrapper.poll(timeout);
+    } finally {
+      end();
+    }
+    processDeregisterQueue();
+    int numKeysUpdated = updateSelectedKeys();
+    //处理中断
+    if (pollWrapper.interrupted()) {
+      //清除pipe事件的响应，并恢复中断状态
+      pollWrapper.putEventOps(pollWrapper.interruptedIndex(), 0);
+      synchronized (interruptLock) {
+        pollWrapper.clearInterrupted();
+        //读取管道数据
+        IOUtil.drain(fd0);
+        interruptTriggered = false;
+      }
+    }
+    return numKeysUpdated;
+  }
+}
+
+class EPollArrayWrapper {
+  private final int epfd;
+  //用于对epoll_event *events数组的增删查改
+  private final AllocatedNativeObject pollArray;
+  //*events地址
+  private final long pollArrayAddress;
+  //对应上面fd1
+  private int outgoingInterruptFD;
+  //对应上面fd0
+  private int incomingInterruptFD;
+  //*events中断事件的下标
+  private int interruptedIndex;
+
+  int poll(long timeout) throws IOException {
+    updateRegistrations();
+    updated = epollWait(pollArrayAddress, NUM_EPOLLEVENTS, timeout, epfd);
+    for (int i=0; i<updated; i++) {
+      //管道事件唤醒epoll，解暑等待
+      if (getDescriptor(i) == incomingInterruptFD) {
+        interruptedIndex = i;
+        interrupted = true;
+        break;
+      }
+    }
+    return updated;
+  }
+
+  public void interrupt() {
+    interrupt(outgoingInterruptFD);
+  }
+  //本地方法名: Java_sun_nio_ch_EPollArrayWrapper_interrupt，会向管道传递数字「1」表中断
+  private static native void interrupt(int fd);
 }
 ```
 
