@@ -143,12 +143,9 @@ EV_SET(&kev, ident, filter, flags, fflags, data, udata);
 
 #### 先来一个NIO网络通讯的示例
 
-Server，`IOException`是要做处理的，我懒得写。
-``` java
-```
-Client
-``` java
-```
+Server，`IOException`是要做处理的，我懒得写。[示例代码](https://github.com/zehonghuang/github_blog_bak/blob/master/source/file/ServerDemo.java)
+
+Client，`read()`同 Server。[示例代码](https://github.com/zehonghuang/github_blog_bak/blob/master/source/file/ClientDemo.java)
 
 #### 多路复用们的包装类
 ##### `EPollSelectorImpl` & `EPollSelectorWapper`
