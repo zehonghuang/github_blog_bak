@@ -71,7 +71,7 @@ int send(int sockfd,void *buf,int len,int flags);
 
 NIO在不同操作系统提供了不同实现，win-select，linux-epoll以及mac-kqueue，本文忽略windows平台，只说linux & mac下的实现。
 
-##### epoll
+#### epoll
 不太想讲epoll跟select的区别，网上多的是，不过唯一要说epoll本身是fd，很多功能都基于此，也不需要select一样重复实例化，下面的kqueue也是一样。
 
 首先是epoll是个文件，所以有可能被其他epoll/select/poll监听，所以可能会出现循环或反向路径，内核实现极其复杂冗长，有兴趣可以啃下`ep_loop_check`和`reverse_path_check`，我图论学得不好，看不下去。
@@ -113,7 +113,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 
 对此我强烈建议写过一次linux下的网络编程，加强理解，这里不写示例了。
 
-##### kqueue
+#### kqueue
 全网关于kqueue的文章少之又少，特别是中文，描述得比较详细的只有这篇[《FreeBSD Kqueue的实现原理》](https://blog.csdn.net/mumumuwudi/article/details/47145801)，外文的就是发明者的论文和[FreeBSD手册](https://www.freebsd.org/cgi/man.cgi?query=kqueue&sektion=2&manpath=FreeBSD+5.0-current)了。kqueue的数据结构我并没有完全搞懂，懒得啃FreeBSD的实现（解压出来的源码有1.05g 手动微笑）。
 ``` c
 //返回一个kqueue fd
@@ -150,7 +150,8 @@ Client，`read()`同 Server。[示例代码](https://github.com/zehonghuang/gith
 #### 多路复用们的包装类
 
 我很想按照demo的代码顺序讲，但感觉NIO的实现几乎围绕着`SelectorImpl`写的，所以还是先来讲讲起子类与多路复用的包装类们。
-##### `EPollSelectorImpl` & `EPollSelectorWapper`
+
+#### `EPollSelectorImpl` & `EPollSelectorWapper`
 后者就是Linux中epoll编程的包装类，在对应的`EPollArrayWrapper.c`中可以看出调用的都是上面说到的函数，实现类特意注册了一个管道用于唤醒`epoll_wait`。
 
 每种实现都是通过`selector.select();`进行轮询，其实现的终极入口在`SelectorImpl.doSelect(timeout)`，对于epoll来说，究极实现在`EPollArrayWrapper.poll(timeout)`，最后调用的则是`epoll_wait`，下面代码都是围绕着轮询实现。
@@ -302,7 +303,7 @@ iepoll(int epfd, struct epoll_event *events, int numfds, jlong timeout)
   }
 }
 ```
-##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
+#### `KqueueSelectorImpl` & `KqueueSelectorWapper`
 
 我挺纠结是否要说kqueue，毕竟除了本身的声明过程，其他几乎与上述的epoll一样。
 
