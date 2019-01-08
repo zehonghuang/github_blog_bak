@@ -370,6 +370,91 @@ Java_sun_nio_ch_KQueueArrayWrapper_kevent0(JNIEnv *env, jobject this, jint kq,
 
 #### 接口类型及其作用
 #### 网络IO相关实现及其分析
+先来看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`.
+``` java
+class ServerSocketChannelImpl
+  extends ServerSocketChannel
+  implements SelChImpl
+{
+  ServerSocketChannelImpl(SelectorProvider sp) throws IOException {
+    super(sp);
+    this.fd =  Net.serverSocket(true);
+    this.fdVal = IOUtil.fdVal(fd);
+    this.state = ST_INUSE;
+  }
+
+  public ServerSocketChannel bind(SocketAddress local) throws IOException {
+    synchronized (lock) {
+      if (!isOpen())
+        throw new ClosedChannelException();
+      if (isBound())
+        throw new AlreadyBoundException();
+      InetSocketAddress isa = (local == null) ? new InetSocketAddress(0) :
+          Net.checkAddress(local);
+      SecurityManager sm = System.getSecurityManager();
+      if (sm != null)
+        sm.checkListen(isa.getPort());
+      NetHooks.beforeTcpBind(fd, isa.getAddress(), isa.getPort());
+      Net.bind(fd, isa.getAddress(), isa.getPort());
+      Net.listen(fd, backlog < 1 ? 50 : backlog);
+      synchronized (stateLock) {
+        localAddress = Net.localAddress(fd);
+      }
+    }
+    return this;
+  }
+
+  public SocketChannel accept() throws IOException {
+    synchronized (lock) {
+      if (!isOpen())
+        throw new ClosedChannelException();
+      if (!isBound())
+        throw new NotYetBoundException();
+      SocketChannel sc = null;
+
+      int n = 0;
+      FileDescriptor newfd = new FileDescriptor();
+      InetSocketAddress[] isaa = new InetSocketAddress[1];
+
+      try {
+        begin();
+        if (!isOpen())
+          return null;
+        thread = NativeThread.current();
+        for (;;) {
+          n = accept(this.fd, newfd, isaa);
+          if ((n == IOStatus.INTERRUPTED) && isOpen())
+            continue;
+          break;
+        }
+      } finally {
+        thread = 0;
+        end(n > 0);
+        assert IOStatus.check(n);
+      }
+
+      if (n < 1)
+        return null;
+
+      IOUtil.configureBlocking(newfd, true);
+      InetSocketAddress isa = isaa[0];
+      sc = new SocketChannelImpl(provider(), newfd, isa);
+      SecurityManager sm = System.getSecurityManager();
+      if (sm != null) {
+        try {
+          sm.checkAccept(isa.getAddress().getHostAddress(),
+                         isa.getPort());
+        } catch (SecurityException x) {
+          sc.close();
+          throw x;
+        }
+      }
+      return sc;
+
+    }
+  }
+}
+```
 #### 文件IO
 
 #### ByteBuffer体系
