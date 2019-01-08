@@ -304,6 +304,66 @@ iepoll(int epfd, struct epoll_event *events, int numfds, jlong timeout)
 ```
 ##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
 
+我挺纠结是否要说kqueue，毕竟除了本身的声明过程，其他几乎与上述的epoll一样。
+
+``` java
+class KQueueSelectorImpl extends SelectorImpl {
+  protected int doSelect(long timeout) throws IOException {
+    int entries = 0;
+    if (closed)
+      throw new ClosedSelectorException();
+    processDeregisterQueue();
+    try {
+      begin();
+      entries = kqueueWrapper.poll(timeout);
+    } finally {
+      end();
+    }
+    processDeregisterQueue();
+    //这里更新selectedKey的位置不同，但其中逻辑与epoll是一样的
+    return updateSelectedKeys(entries);
+  }
+}
+
+class KQueueArrayWrapper {
+  int poll(long timeout) {
+    updateRegistrations();
+    int updated = kevent0(kq, keventArrayAddress, NUM_KEVENTS, timeout);
+    return updated;
+  }
+  private native int kevent0(int kq, long keventAddress, int keventCount,
+                               long timeout);
+}
+```
+要说不同，也就最后`kevent0`的轮询，不像epoll收到中断后会继续轮询，这里是直接return 0，由用户代码继续下一次轮询。
+``` c
+JNIEXPORT jint JNICALL
+Java_sun_nio_ch_KQueueArrayWrapper_kevent0(JNIEnv *env, jobject this, jint kq,
+                                           jlong kevAddr, jint kevCount,
+                                           jlong timeout)
+{
+  //...
+  if (timeout >= 0) {
+    ts.tv_sec = timeout / 1000;
+    ts.tv_nsec = (timeout % 1000) * 1000000;
+    tsp = &ts;
+  } else {
+    tsp = NULL;
+  }
+  result = kevent(kq, NULL, 0, kevs, kevCount, tsp);
+
+  if (result < 0) {
+    if (errno == EINTR) {
+      result = 0;
+    } else {
+      JNU_ThrowIOExceptionWithLastError(env, "KQueueArrayWrapper: kqueue failed");
+    }
+  }
+  return result;
+}
+```
+由此，多路复用在JVM的实现到这为止。
+
 #### Channels
 ![Channel体系](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/Channel%E4%BD%93%E7%B3%BB.png)
 
