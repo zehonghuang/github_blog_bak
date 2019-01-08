@@ -151,6 +151,7 @@ Client，`read()`同 Server。[示例代码](https://github.com/zehonghuang/gith
 
 我很想按照demo的代码顺序讲，但感觉NIO的实现几乎围绕着`SelectorImpl`写的，所以还是先来讲讲起子类与多路复用的包装类们。
 ##### `EPollSelectorImpl` & `EPollSelectorWapper`
+后者就是Linux中epoll编程的包装类，在对应的`EPollArrayWrapper.c`中可以看出调用的都是上面说到的函数。实现类特意注册了一个管道用于唤醒`epoll_wait`，
 
 ``` java
 class EPollSelectorImpl extends SelectorImpl {
@@ -175,6 +176,7 @@ class EPollSelectorImpl extends SelectorImpl {
   protected int doSelect(long timeout) throws IOException {
     if (closed)
       throw new ClosedSelectorException();
+    //删除被cancel的selectionKey
     processDeregisterQueue();
     try {
       begin();
@@ -182,6 +184,7 @@ class EPollSelectorImpl extends SelectorImpl {
     } finally {
       end();
     }
+    //删除阻塞中被其他线程cancel的selectionKey
     processDeregisterQueue();
     int numKeysUpdated = updateSelectedKeys();
     //处理中断
@@ -213,10 +216,10 @@ class EPollArrayWrapper {
   private int interruptedIndex;
 
   int poll(long timeout) throws IOException {
-    updateRegistrations();
+    updateRegistrations(); //更新注册的event
     updated = epollWait(pollArrayAddress, NUM_EPOLLEVENTS, timeout, epfd);
     for (int i=0; i<updated; i++) {
-      //管道事件唤醒epoll，解暑等待
+      //管道事件唤醒epoll，结束等待
       if (getDescriptor(i) == incomingInterruptFD) {
         interruptedIndex = i;
         interrupted = true;
@@ -236,21 +239,58 @@ class EPollArrayWrapper {
 
 EPollArrayWrapper的JNI代码，如下
 ``` c
+#define RESTARTABLE(_cmd, _result) do { \
+  do { \
+    _result = _cmd; \
+    //如果被系统中断而结束轮询，会继续下一次epoll_wait
+  } while((_result == -1) && (errno == EINTR)); \
+} while(0)
+
 JNIEXPORT jint JNICALL
 Java_sun_nio_ch_EPollArrayWrapper_epollWait(JNIEnv *env, jobject this,
                                             jlong address, jint numfds,
                                             jlong timeout, jint epfd)
 {
-  struct epoll_event *events = jlong_to_ptr(address);
+  struct epoll_event *events = jlong_to_ptr(address);//获取指针
   int res;
 
-  if (timeout <= 0) {           /* Indefinite or no wait */
+  if (timeout <= 0) { //无限阻塞 or 非阻塞
     RESTARTABLE((*epoll_wait_func)(epfd, events, numfds, timeout), res);
   } else {                      /* Bounded wait; bounded restarts */
     res = iepoll(epfd, events, numfds, timeout);
   }
   //...
   return res;
+}
+
+static int
+iepoll(int epfd, struct epoll_event *events, int numfds, jlong timeout)
+{
+  jlong start, now;
+  int remaining = timeout;
+  struct timeval t;
+  int diff;
+
+  gettimeofday(&t, NULL);
+  start = t.tv_sec * 1000 + t.tv_usec / 1000;
+
+  for (;;) {
+    int res = epoll_wait(epfd, events, numfds, timeout);
+    if (res < 0 && errno == EINTR) {
+      if (remaining >= 0) {
+        gettimeofday(&t, NULL);
+        now = t.tv_sec * 1000 + t.tv_usec / 1000;
+        diff = now - start;
+        remaining -= diff;
+        if (diff < 0 || remaining <= 0) {
+          return 0;
+        }
+        start = now;
+      }
+    } else {
+      return res;
+    }
+  }
 }
 ```
 ##### `KqueueSelectorImpl` & `KqueueSelectorWapper`
