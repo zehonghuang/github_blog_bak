@@ -385,7 +385,7 @@ configureBlocking(int fd, jboolean blocking)
   return (flags == newflags) ? 0 : fcntl(fd, F_SETFL, newflags);
 }
 ```
-不过有必要说明该方法的使用注意事项
+不过有必要说明该方法的使用注意事项，一旦fd(即channel)被注册后，是不能重新设置为阻塞的。如果在注册前或不需要注册，是可以使用阻塞模式的fd进行读写操作的。
 ```java
 public abstract class AbstractSelectableChannel
     extends SelectableChannel
@@ -398,6 +398,7 @@ public abstract class AbstractSelectableChannel
         throw new ClosedChannelException();
       if (blocking == block)
         return this;
+      //ValidKeys是查找该fd是否有注册的key，如果有且设置为阻塞，直接抛异常。
       if (block && haveValidKeys())
         throw new IllegalBlockingModeException();
       implConfigureBlocking(block);
