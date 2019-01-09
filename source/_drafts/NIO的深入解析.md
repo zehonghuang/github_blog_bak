@@ -370,31 +370,53 @@ Java_sun_nio_ch_KQueueArrayWrapper_kevent0(JNIEnv *env, jobject this, jint kq,
 
 #### 接口类型及其作用
 #### 网络IO相关实现及其分析
-先来看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`.
+
+这里我需要先说明一下`configureBlocking(boolean)`方法，这实际是调用了上述说到`fcntl()`，可以看下`IOUtil.configureBlocking(FileDescriptor fd, boolean blocking);`的JNI源码，所以下述socket fd都是非阻塞的，有`空循环`很正常。
+```c
+/*
+ * IOUtil.c
+ */
+static int
+configureBlocking(int fd, jboolean blocking)
+{
+  int flags = fcntl(fd, F_GETFL);
+  int newflags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+
+  return (flags == newflags) ? 0 : fcntl(fd, F_SETFL, newflags);
+}
+```
+
+先来看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`，示例中`ssc.bind(new InetSocketAddress(16767))`已经包含了`bind`&`listen`两个函数。
 ``` java
 class ServerSocketChannelImpl
   extends ServerSocketChannel
   implements SelChImpl
 {
+  //未初始化
+  private static final int ST_UNINITIALIZED = -1;
+  //正在使用
+  private static final int ST_INUSE = 0;
+  //socket被kill
+  private static final int ST_KILLED = 1;
   ServerSocketChannelImpl(SelectorProvider sp) throws IOException {
     super(sp);
+    // Net包含一切与socket编程有关的JNI
     this.fd =  Net.serverSocket(true);
+    // fd的真实地址
     this.fdVal = IOUtil.fdVal(fd);
     this.state = ST_INUSE;
   }
 
-  public ServerSocketChannel bind(SocketAddress local) throws IOException {
+  public ServerSocketChannel bind(SocketAddress local, int backlog) throws IOException {
     synchronized (lock) {
-      if (!isOpen())
-        throw new ClosedChannelException();
-      if (isBound())
-        throw new AlreadyBoundException();
+      //...
       InetSocketAddress isa = (local == null) ? new InetSocketAddress(0) :
           Net.checkAddress(local);
       SecurityManager sm = System.getSecurityManager();
-      if (sm != null)
-        sm.checkListen(isa.getPort());
+      //...
+      //SDP相关的钩子，没看懂
       NetHooks.beforeTcpBind(fd, isa.getAddress(), isa.getPort());
+      //实际调用的是net_util_md.c的NET_InetAddressToSockaddr 和NET_Bind
       Net.bind(fd, isa.getAddress(), isa.getPort());
       Net.listen(fd, backlog < 1 ? 50 : backlog);
       synchronized (stateLock) {
@@ -406,10 +428,7 @@ class ServerSocketChannelImpl
 
   public SocketChannel accept() throws IOException {
     synchronized (lock) {
-      if (!isOpen())
-        throw new ClosedChannelException();
-      if (!isBound())
-        throw new NotYetBoundException();
+      //...
       SocketChannel sc = null;
 
       int n = 0;
@@ -454,6 +473,70 @@ class ServerSocketChannelImpl
     }
   }
 }
+```
+
+``` c
+/*
+ *  Net.c
+ */
+JNIEXPORT jint JNICALL
+Java_sun_nio_ch_Net_socket0(JNIEnv *env, jclass cl, jboolean preferIPv6,
+                            jboolean stream, jboolean reuse, jboolean ignored)
+{
+  int type = (stream ? SOCK_STREAM : SOCK_DGRAM);
+  //参数参考上述内容
+  fd = socket(domain, type, 0);
+  if (fd < 0) {
+    return handleSocketError(env, errno);
+  }
+  //默认ipv4与ipv6能监听同一端口
+  setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&arg, sizeof(int));
+
+  //如果是UDP协议
+  //不支持IP_MULTICAST_ALL，这个是linux2.6的非标准选项，被人喷了一脸血
+  //int level = (domain == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IP;
+  setsockopt(fd, level, IP_MULTICAST_ALL, (char*)&arg, sizeof(arg));
+  //支持IPv6组播
+  setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &arg, sizeof(arg));
+
+  //server是允许reuseadd的，client不允许
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char*)&arg, sizeof(arg));
+}
+
+/*
+ * ServerSocketChannelImpl.c
+ */
+ JNIEXPORT jint JNICALL
+ Java_sun_nio_ch_ServerSocketChannelImpl_accept0(JNIEnv *env, jobject this,
+                                                 jobject ssfdo, jobject newfdo,
+                                                 jobjectArray isaa)
+ {
+   //...
+   //出现ECONNABORTED则忽略，继续accept，用户代码不需要对RST做出处理。
+   for (;;) {
+     socklen_t sa_len = alloc_len;
+     newfd = accept(ssfd, sa, &sa_len);
+     if (newfd >= 0) {
+       break;
+     }
+     if (errno != ECONNABORTED) {
+       break;
+     }
+   }
+
+   if (newfd < 0) {
+     free((void *)sa);
+     //IOS_** 同等IOStatus中的常量
+     if (errno == EAGAIN)
+       return IOS_UNAVAILABLE;
+     if (errno == EINTR)
+       return IOS_INTERRUPTED;
+     JNU_ThrowIOExceptionWithLastError(env, "Accept failed");
+     return IOS_THROWN;
+   }
+   //...
+   return 1;
+ }
 ```
 #### 文件IO
 
