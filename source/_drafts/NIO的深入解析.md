@@ -385,6 +385,28 @@ configureBlocking(int fd, jboolean blocking)
   return (flags == newflags) ? 0 : fcntl(fd, F_SETFL, newflags);
 }
 ```
+不过有必要说明该方法的使用注意事项
+```java
+public abstract class AbstractSelectableChannel
+    extends SelectableChannel
+{
+  public final SelectableChannel configureBlocking(boolean block)
+    throws IOException
+  {
+    synchronized (regLock) {
+      if (!isOpen())
+        throw new ClosedChannelException();
+      if (blocking == block)
+        return this;
+      if (block && haveValidKeys())
+        throw new IllegalBlockingModeException();
+      implConfigureBlocking(block);
+      blocking = block;
+    }
+    return this;
+  }
+}
+```
 
 先来看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`，示例中`ssc.bind(new InetSocketAddress(16767))`已经包含了`bind`&`listen`两个函数。
 ``` java
@@ -432,7 +454,9 @@ class ServerSocketChannelImpl
       SocketChannel sc = null;
 
       int n = 0;
+      //connection fd，用于socket读写
       FileDescriptor newfd = new FileDescriptor();
+      //客户端地址
       InetSocketAddress[] isaa = new InetSocketAddress[1];
 
       try {
@@ -442,6 +466,7 @@ class ServerSocketChannelImpl
         thread = NativeThread.current();
         for (;;) {
           n = accept(this.fd, newfd, isaa);
+          //遇到EINTR，忽略且继续监听
           if ((n == IOStatus.INTERRUPTED) && isOpen())
             continue;
           break;
@@ -454,22 +479,15 @@ class ServerSocketChannelImpl
 
       if (n < 1)
         return null;
-
+      //默认connection fd阻塞，后面需要非阻塞读写则重新设为O_NONBLOCK
       IOUtil.configureBlocking(newfd, true);
       InetSocketAddress isa = isaa[0];
       sc = new SocketChannelImpl(provider(), newfd, isa);
       SecurityManager sm = System.getSecurityManager();
       if (sm != null) {
-        try {
-          sm.checkAccept(isa.getAddress().getHostAddress(),
-                         isa.getPort());
-        } catch (SecurityException x) {
-          sc.close();
-          throw x;
-        }
+        //...
       }
       return sc;
-
     }
   }
 }
@@ -526,7 +544,7 @@ Java_sun_nio_ch_Net_socket0(JNIEnv *env, jclass cl, jboolean preferIPv6,
 
    if (newfd < 0) {
      free((void *)sa);
-     //IOS_** 同等IOStatus中的常量
+     //IOS_** 同等IOStatus.java中的常量
      if (errno == EAGAIN)
        return IOS_UNAVAILABLE;
      if (errno == EINTR)
