@@ -643,7 +643,6 @@ public boolean connect(SocketAddress sa) throws IOException {
 ##### Buffer的指针
 就是个对数组操作的容器，内部的指针也很容易理解，直接上图上源码，不多做解释。
 
-
 ![Buffer的指针](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/bytebuffer%E6%8C%87%E9%92%88.png)
 ``` java
 public abstract class Buffer {
