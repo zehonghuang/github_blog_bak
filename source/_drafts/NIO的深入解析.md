@@ -75,6 +75,7 @@ NIO在不同操作系统提供了不同实现，win-select，linux-epoll以及ma
 不太想讲epoll跟select的区别，网上多的是，不过唯一要说epoll本身是fd，很多功能都基于此，也不需要select一样重复实例化，下面的kqueue也是一样。
 
 首先是epoll是个文件，所以有可能被其他epoll/select/poll监听，所以可能会出现循环或反向路径，内核实现极其复杂冗长，有兴趣可以啃下`ep_loop_check`和`reverse_path_check`，我图论学得不好，看不下去。
+需要说明fd、event、epfd的关系，epfd <n/n> fd <n/n> event，均是多对多的关系。
 ```c
 typedef union epoll_data {
   void *ptr; //如果需要，可以携带自定义数据
@@ -366,9 +367,24 @@ Java_sun_nio_ch_KQueueArrayWrapper_kevent0(JNIEnv *env, jobject this, jint kq,
 由此，多路复用在JVM的实现到这为止。
 
 #### Channels
+讲道理，这个图看起来复杂，其实功能接口很分明，阅读难度并不大。
+
 ![Channel体系](https://raw.githubusercontent.com/zehonghuang/github_blog_bak/master/source/image/Channel%E4%BD%93%E7%B3%BB.png)
 
 #### 接口类型及其作用
+
+`Channel`顶级接口，实际只提供一个`close()`。
+
+`InterruptibleChannel`注释写了用于异步关闭or中断，大概说的是`AbstractInterruptibleChannel.begin()`的回调，中断后调用`implCloseChannel()`。
+
+`SelectableChannel`这个就是多路复用提供的部分实现API。
+
+`NetworkChannel`网络IO，绑定、设置socket选项等。
+
+`ScatteringByteChannel` & `GatheringByteChannel`就是BufferByte读写了。
+
+`SeekableByteChannel`知道`lseek()`就明白是跟文件IO相关的了。
+
 #### 网络IO相关实现及其分析
 
 这里我需要先说明一下`configureBlocking(boolean)`方法，这实际是调用了上述说到`fcntl()`，可以看下`IOUtil.configureBlocking(FileDescriptor fd, boolean blocking);`的JNI源码，所以下述socket fd都是非阻塞的，有`空循环`很正常。
@@ -409,7 +425,43 @@ public abstract class AbstractSelectableChannel
 }
 ```
 
-先来看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`，示例中`ssc.bind(new InetSocketAddress(16767))`已经包含了`bind`&`listen`两个函数。
+在上面已经提及`AbstractSelectableChannel.configureBlocking`这么小而重要的方法，有一个与其息息相关的方法就是register了。需要说的是，epfd(或kq)和被监听的fd是可以多对多的，所以每个channel都需要被维护一个selectionKey[]记录被哪些epfd监听。
+``` java
+public final SelectionKey register(Selector sel, int ops,
+                                   Object att)
+    throws ClosedChannelException
+{
+  synchronized (regLock) {
+    if (!isOpen())
+      throw new ClosedChannelException();
+    //随意传一个int是非法的
+    if ((ops & ~validOps()) != 0)
+      throw new IllegalArgumentException();
+    //如上面所说，阻塞不能被注册的
+    if (blocking)
+      throw new IllegalBlockingModeException();
+    //从SelectionKey[]中查找是被注册过
+    SelectionKey k = findKey(sel);
+    if (k != null) {
+      //实际调用epoll_ctl + EPOLL_CTL_MOD
+      k.interestOps(ops);
+      k.attach(att);
+    }
+    if (k == null) {
+      synchronized (keyLock) {
+        if (!isOpen())
+          throw new ClosedChannelException();
+        //就是epoll_ctl + EPOLL_CTL_ADD
+        k = ((AbstractSelector)sel).register(this, ops, att);
+        addKey(k);
+      }
+    }
+    return k;
+  }
+}
+```
+
+来看看`ServerSocketChannel.open()`发射出去的实例`SocketChannelImpl`，示例中`ssc.bind(new InetSocketAddress(16767))`已经包含了`bind`&`listen`两个函数，这里也把`accpet()`给说了。
 ``` java
 class ServerSocketChannelImpl
   extends ServerSocketChannel
@@ -493,7 +545,7 @@ class ServerSocketChannelImpl
   }
 }
 ```
-
+Net.c算是把Linux的socket编程都写了一遍了，部分是ipv6&udp的设置，我个人不是很了解。
 ``` c
 /*
  *  Net.c
@@ -511,7 +563,7 @@ Java_sun_nio_ch_Net_socket0(JNIEnv *env, jclass cl, jboolean preferIPv6,
   //默认ipv4与ipv6能监听同一端口
   setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&arg, sizeof(int));
 
-  //如果是UDP协议
+  //如果是UDP协议（以下省略部分代码，可以阅读openjdk9的完整代码）
   //不支持IP_MULTICAST_ALL，这个是linux2.6的非标准选项，被人喷了一脸血
   //int level = (domain == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IP;
   setsockopt(fd, level, IP_MULTICAST_ALL, (char*)&arg, sizeof(arg));
@@ -557,7 +609,30 @@ Java_sun_nio_ch_Net_socket0(JNIEnv *env, jclass cl, jboolean preferIPv6,
    return 1;
  }
 ```
+
+客户端的连接就很简单了，并不难，方法看似很长重点也就那么几行，JNI的代码就不贴了。
+``` java
+public boolean connect(SocketAddress sa) throws IOException {
+  for (;;) {
+    InetAddress ia = isa.getAddress();
+    if (ia.isAnyLocalAddress())
+      ia = InetAddress.getLocalHost();
+    n = Net.connect(fd,
+                    ia,
+                    isa.getPort());
+    //同样忽略RST错误
+    if ((n == IOStatus.INTERRUPTED)
+          && isOpen())
+      continue;
+    break;
+  }
+}
+```
+
 #### 文件IO
+
+```java
+```
 
 #### ByteBuffer体系
 
