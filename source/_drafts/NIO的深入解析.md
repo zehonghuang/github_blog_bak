@@ -677,6 +677,7 @@ public abstract class Buffer {
 ```
 
 #### ByteBuffer
+都是一些读读写写的操作，不做讲述了。
 
 #### HeapByteBuffer
 ``` java
@@ -687,6 +688,8 @@ class HeapByteBuffer extends ByteBuffer {
 }
 ```
 #### DirectByteBuffer
+正如类名所示direct，分配了java heap以外的「直接」内存，空间大小由JVM参数`-XX:MaxDirectMemorySize`控制，默认64m。
+
 ``` java
 class DirectByteBuffer extends MappedByteBuffer implements DirectBuffer {
   DirectByteBuffer(int cap) {
