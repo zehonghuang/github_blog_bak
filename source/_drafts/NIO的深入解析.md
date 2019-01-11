@@ -688,15 +688,19 @@ class HeapByteBuffer extends ByteBuffer {
 }
 ```
 #### DirectByteBuffer
-正如类名所示direct，分配了java heap以外的「直接」内存，空间大小由JVM参数`-XX:MaxDirectMemorySize`控制，默认64m。
+正如类名所示direct，分配了java heap以外的「直接」内存，空间大小由JVM参数`-XX:MaxDirectMemorySize`控制，默认64m。我一开始认为jvm应该会根据这个参数在进程里面分配相对于的vm_area_struct，与heap相似的管理方式。直到我看到下面`DirectByteBuffer`的构造方法，吃了一鲸，并不是我想象中那样，而是DirectMemory分配的控制是交给java控制。
 
 ``` java
 class DirectByteBuffer extends MappedByteBuffer implements DirectBuffer {
   DirectByteBuffer(int cap) {
     super(-1, 0, cap, cap);
+    //是否对齐页面，一般设置为false，-XX:+PageAlignDirectMemory控制
+    //如果对齐，最后的address是个页面上边框的地址，有利于页面查找效率
     boolean pa = VM.isDirectMemoryPageAligned();
     int ps = Bits.pageSize();
     long size = Math.max(1L, (long)cap + (pa ? ps : 0));
+    //好了，看到这里简直大跌
+    //在这
     Bits.reserveMemory(size, cap);
 
     long base = 0;
