@@ -1,6 +1,6 @@
 ---
 title: 【网络编程】从Linux角度以及JVM源码，深入NIO的细节
-date: 2018-12-24 13:17:21
+date: 2010-01-09 13:17:21
 tags:
   - java
   - NIO
@@ -56,8 +56,8 @@ int connect(int sd, struct sockaddr *server, int addr_len);
 
 注，阻塞非阻塞模式，以下函数返回值有所区别。
 ```c
-int write(int fd, void *buf, size_t nbytes);
-int read(int fd, void *buf, size_t nbytes);
+int write(int fd, void *buf, size_t nbytes);//pwrite(), writev()
+int read(int fd, void *buf, size_t nbytes);//pread(), readv()
 //flags：这里没打算展开讲，自行google
 //MSG_DONTROUTE 本地网络，不需查找路由
 //MSG_OOB TCP URG紧急指针，多用于心跳
@@ -630,9 +630,7 @@ public boolean connect(SocketAddress sa) throws IOException {
 ```
 
 #### 文件IO
-
-```java
-```
+留个位置
 
 #### ByteBuffer体系
 
@@ -680,6 +678,7 @@ public abstract class Buffer {
 都是一些读读写写的操作，不做讲述了。
 
 #### HeapByteBuffer
+其实就是个byte[]，这个确实没什么好讲的。
 ``` java
 class HeapByteBuffer extends ByteBuffer {
   HeapByteBuffer(int cap, int lim) {
@@ -692,24 +691,26 @@ class HeapByteBuffer extends ByteBuffer {
 
 ``` java
 class DirectByteBuffer extends MappedByteBuffer implements DirectBuffer {
-  DirectByteBuffer(int cap) {
     super(-1, 0, cap, cap);
     //是否对齐页面，一般设置为false，-XX:+PageAlignDirectMemory控制
     //如果对齐，最后的address是个页面上边框的地址，有利于页面查找效率
     boolean pa = VM.isDirectMemoryPageAligned();
     int ps = Bits.pageSize();
     long size = Math.max(1L, (long)cap + (pa ? ps : 0));
-    //好了，看到这里简直大跌
-    //在这
+    //这里会尝试分配空间，假如空间不足会执行Cleaner做清理后再次尝试分配
+    //上面失败后，会进入自旋9次，若成功则返回，失败抛出OOM
+    //关于这个方法可以参考JVM大佬寒泉子的http://lovestblog.cn/blog/2015/05/12/direct-buffer/
     Bits.reserveMemory(size, cap);
 
     long base = 0;
     try {
+      //看JNI代码可以看到jvm声明了自己的方法os::malloc进行内存分配
       base = unsafe.allocateMemory(size);
     } catch (OutOfMemoryError x) {
       Bits.unreserveMemory(size, cap);
       throw x;
     }
+    //将内存全部置零
     unsafe.setMemory(base, size, (byte) 0);
     if (pa && (base % ps != 0)) {
       // Round up to page boundary
@@ -721,4 +722,23 @@ class DirectByteBuffer extends MappedByteBuffer implements DirectBuffer {
     att = null;
   }
 }
+```
+这个地方我一直很让我纠结，这个「直接」内存是分配在进程的堆区还是在映射区（忽略malloc()大于128k使用mmap()），自己又实在不想浪费心力过分研读JVM源码。如果正用了malloc，DirectByteBuffer并非所谓实现Linux零拷贝。
+
+如果是在进程堆区，最后还是要拷贝至内核空间，参考FileChannel的map()，JNI毫不吝啬直接调用mmap()，所以看到os::malloc我很疑惑是否仅仅直接交给glibc进行内存分配。
+
+``` cpp
+UNSAFE_ENTRY(jlong, Unsafe_AllocateMemory(JNIEnv *env, jobject unsafe, jlong size))
+  UnsafeWrapper("Unsafe_AllocateMemory");
+  size_t sz = (size_t)size;
+  //...
+  if (sz == 0) {
+    return 0;
+  }
+  sz = round_to(sz, HeapWordSize);
+  void* x = os::malloc(sz, mtInternal);
+  //...
+  //Copy::fill_to_words((HeapWord*)x, sz / HeapWordSize);
+  return addr_to_java(x);
+UNSAFE_END
 ```
