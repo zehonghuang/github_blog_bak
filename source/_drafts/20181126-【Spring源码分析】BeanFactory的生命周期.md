@@ -15,7 +15,7 @@ categories:
 ---
 
 两级别生命周期：
-  - 容器级别
+  - 容器级别 
     - BeanFactoryPostProcessor
     - BeanDefinitionRegistryPostProcessor
     - 调用实现逻辑
