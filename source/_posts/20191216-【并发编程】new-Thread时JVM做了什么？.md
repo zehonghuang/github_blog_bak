@@ -11,9 +11,11 @@ categories:
     - java并发编程
 ---
 
-最近兴致勃勃捡起C++，打算深入Unix网络编程，但输出博客想从比较简单的问题入手，所以对标一下Java与C的线程创建过程，加深一下理解。
+最近兴致勃勃捡起C++，打算深入Unix网络编程，但输出博客想从比较简单的问题入手，所以对标一下Java与C的线程创建过程，加深一下理解。（注，Linux）
 
 ---
+
+Java创建线程是简单的，`new Thread()`和`start()`即可启动并执行线程，但由于posix提供的api还涉及不少线程属性，真实过程显然要复杂得多。可以看到前者`new Thread`只是初始化属性，后者才是真正意义上调用本地接口`JVM_StartThread`，创建线程。
 
 ``` c++
 //以下函数指针均被定义在jvm.h，实现在jvm.cpp
@@ -37,31 +39,28 @@ static JNINativeMethod methods[] = {
 };
 ```
 
-.....
+阅读相关JVM源码时，需要知道几个重要类的关系，下面部分实现默认os_linux.cpp。
+```
+1、JavaThread: 创建线程执行任务，持有java_lang_thread对象，维护线程状态运行Thread.run()的地方
+2、OSThread: 由于不同操作系统的状态不一致，所以JVM维护了一套平台线程状态，被JavaThread所持有
+3、java_lang_Thread::ThreadStatus: 即Java线程状态，与java.lang.Thread.State完全一致
+4、OSThread::ThreadState: 2所说的平台线程状态
+```
 
 ``` c++
 JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
   JVMWrapper("JVM_StartThread");
   JavaThread *native_thread = NULL;
 
-  // We cannot hold the Threads_lock when we throw an exception,
-  // due to rank ordering issues. Example:  we might need to grab the
-  // Heap_lock while we construct the exception.
   bool throw_illegal_thread_state = false;
 
-  // We must release the Threads_lock before we can post a jvmti event
-  // in Thread::start.
+  //这里一对花括号代表一段程序，执行完后回释放资源，会调用~MutexLocker(Monitor * monitor)释放互斥锁 (注，~代表析构函数)
   {
-    // Ensure that the C++ Thread and OSThread structures aren't freed before
-    // we operate.
+    //获取互斥锁，加上诉说明，等同于synchronized代码块
+    //这里的独占锁依然使用了posix的pthread_mutex_lock函数，具体实现在os_posix.cpp的PlatformEvent.park & unpark函数
     MutexLocker mu(Threads_lock);
 
-    // Since JDK 5 the java.lang.Thread threadStatus is used to prevent
-    // re-starting an already started thread, so we should usually find
-    // that the JavaThread is null. However for a JNI attached thread
-    // there is a small window between the Thread object being created
-    // (with its JavaThread set) and the update to its threadStatus, so we
-    // have to check for this
+    //这里检查Thread.java的long eetop变量是否有值，避免重复启动线程，该值为JavaThread的地址
     if (java_lang_Thread::thread(JNIHandles::resolve_non_null(jthread)) != NULL) {
       throw_illegal_thread_state = true;
     } else {
