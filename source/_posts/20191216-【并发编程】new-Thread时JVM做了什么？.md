@@ -41,12 +41,13 @@ static JNINativeMethod methods[] = {
 
 阅读相关JVM源码时，需要知道几个重要类的关系，下面部分实现默认os_linux.cpp。
 ```
-1、JavaThread: 创建线程执行任务，持有java_lang_thread对象，维护线程状态运行Thread.run()的地方
+1、JavaThread: 创建线程执行任务，持有java_lang_thread & OSThread对象，维护线程状态运行Thread.run()的地方
 2、OSThread: 由于不同操作系统的状态不一致，所以JVM维护了一套平台线程状态，被JavaThread所持有
 3、java_lang_Thread::ThreadStatus: 即Java线程状态，与java.lang.Thread.State完全一致
 4、OSThread::ThreadState: 2所说的平台线程状态
 ```
 
+需要说的是，以下相关pthread函数均是posix标准，可自行阅读<pthread.h>文档，不多赘述。
 ``` c++
 JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
   JVMWrapper("JVM_StartThread");
@@ -57,35 +58,26 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
   //这里一对花括号代表一段程序，执行完后回释放资源，会调用~MutexLocker(Monitor * monitor)释放互斥锁 (注，~代表析构函数)
   {
     //获取互斥锁，加上诉说明，等同于synchronized代码块
-    //这里的独占锁依然使用了posix的pthread_mutex_lock函数，具体实现在os_posix.cpp的PlatformEvent.park & unpark函数
+    //这里的独占锁依然使用了pthread_mutex_lock函数
+    //具体实现在os_posix.cpp的PlatformEvent.park & unpark函数
     MutexLocker mu(Threads_lock);
 
     //这里检查Thread.java的long eetop变量是否有值，避免重复启动线程，该值为JavaThread的地址
     if (java_lang_Thread::thread(JNIHandles::resolve_non_null(jthread)) != NULL) {
       throw_illegal_thread_state = true;
     } else {
-      // We could also check the stillborn flag to see if this thread was already stopped, but
-      // for historical reasons we let the thread detect that itself when it starts running
-
+      //实例化Thread时，可以设置stackSize，用于初始化虚拟地址栈空间
       jlong size =
              java_lang_Thread::stackSize(JNIHandles::resolve_non_null(jthread));
-      // Allocate the C++ Thread structure and create the native thread.  The
-      // stack size retrieved from java is 64-bit signed, but the constructor takes
-      // size_t (an unsigned type), which may be 32 or 64-bit depending on the platform.
-      //  - Avoid truncating on 32-bit platforms if size is greater than UINT_MAX.
-      //  - Avoid passing negative values which would result in really large stacks.
+
       NOT_LP64(if (size > SIZE_MAX) size = SIZE_MAX;)
       size_t sz = size > 0 ? (size_t) size : 0;
+      //这里正式调用pthread_create创建线程
       native_thread = new JavaThread(&thread_entry, sz);
 
-      // At this point it may be possible that no osthread was created for the
-      // JavaThread due to lack of memory. Check for this situation and throw
-      // an exception if necessary. Eventually we may want to change this so
-      // that we only grab the lock if the thread was created successfully -
-      // then we can also do this check and throw the exception in the
-      // JavaThread constructor.
+      //可能因为内存不足，无法为OSThread分配空间，所以可能为NULL
       if (native_thread->osthread() != NULL) {
-        // Note: the current thread is not being used within "prepare".
+        //上面提到的eetop，将在这里被设置
         native_thread->prepare(jthread);
       }
     }
@@ -98,7 +90,7 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
   assert(native_thread != NULL, "Starting null thread?");
 
   if (native_thread->osthread() == NULL) {
-    // No one should hold a reference to the 'native_thread'.
+    // 安全内存回收(SMR)
     native_thread->smr_delete();
     if (JvmtiExport::should_post_resource_exhausted()) {
       JvmtiExport::post_resource_exhausted(
@@ -108,26 +100,27 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
     THROW_MSG(vmSymbols::java_lang_OutOfMemoryError(),
               os::native_thread_creation_failed_msg());
   }
-
+  //哦吼！这是线程真正的开始
   Thread::start(native_thread);
 
 JVM_END
 ```
-..........
 
+我们知道`pthread_create`创建线程后立刻执行线程，所以什么`Thread::start`才是真正启动线程，我们需要进一步窥探。
 ``` c++
 //JavaThread类定义在thread.hpp中，为Thread的子类
 JavaThread::JavaThread(ThreadFunction entry_point, size_t stack_sz) :
                        Thread() {
+  //初始化字段，最重要的是创建线程安全点，作用在垃圾回收时的STW
   initialize();
   _jni_attach_state = _not_attaching_via_jni;
   set_entry_point(entry_point);
-  // Create the native thread itself.
-  // %note runtime_23
+  //yep，线程类型有gc、编译、守护、平台等几种
   os::ThreadType thr_type = os::java_thread;
   thr_type = entry_point == &compiler_thread_entry ? os::compiler_thread :
                                                      os::java_thread;
   os::create_thread(this, thr_type, stack_sz);
+  //这段话我没懂，有大佬明白可以交流下
   // The _osthread may be NULL here because we ran out of memory (too many threads active).
   // We need to throw and OutOfMemoryError - however we cannot do this here because the caller
   // may hold a lock and all locks must be unlocked before throwing the exception (throwing
@@ -149,13 +142,13 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
                        size_t req_stack_size) {
   assert(thread->osthread() == NULL, "caller responsible");
 
-  // Allocate the OSThread object
+  // Allocate the OSThread object (<_<)可能空指针
   OSThread* osthread = new OSThread(NULL, NULL);
   if (osthread == NULL) {
     return false;
   }
 
-  // set the correct thread state
+  // java_thread
   osthread->set_thread_type(thr_type);
 
   // Initial state is ALLOCATED but not INITIALIZED
@@ -163,20 +156,17 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
 
   thread->set_osthread(osthread);
 
-  // init thread attributes
   pthread_attr_t attr;
   pthread_attr_init(&attr);
+  // 所以java线程都是分离状态，join也并非用结合状态
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-  // Calculate stack size if it's not specified by caller.
+  // -Xss默认1M，Thread没设置stackSize，在Linux-x86默认512K，取最大值
   size_t stack_size = os::Posix::get_initial_stack_size(thr_type, req_stack_size);
-  // In the Linux NPTL pthread implementation the guard size mechanism
-  // is not implemented properly. The posix standard requires adding
-  // the size of the guard pages to the stack size, instead Linux
-  // takes the space out of 'stacksize'. Thus we adapt the requested
-  // stack_size by the size of the guard pages to mimick proper
-  // behaviour. However, be careful not to end up with a size
-  // of zero due to overflow. Don't add the guard page in that case.
+  //这里设置栈警戒缓冲区，默认系统页大小
+  //原注解的意思是，Linux的NPTL没有完全按照posix标准
+  //理应guard_size + stack_size，且二者大小相等，而不是从stack_size取guard_size作为警戒取
+  //所以这里模仿实现posix标准
   size_t guard_size = os::Linux::default_guard_size(thr_type);
   if (stack_size <= SIZE_MAX - guard_size) {
     stack_size += guard_size;
@@ -186,24 +176,15 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   int status = pthread_attr_setstacksize(&attr, stack_size);
   assert_status(status == 0, status, "pthread_attr_setstacksize");
 
-  // Configure glibc guard page.
   pthread_attr_setguardsize(&attr, os::Linux::default_guard_size(thr_type));
 
   ThreadState state;
 
   {
+    //欧了，创建线程，函数指针thread_native_entry是重点
     pthread_t tid;
     int ret = pthread_create(&tid, &attr, (void* (*)(void*)) thread_native_entry, thread);
-
-    char buf[64];
-    if (ret == 0) {
-      log_info(os, thread)("Thread started (pthread id: " UINTX_FORMAT ", attributes: %s). ",
-        (uintx) tid, os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
-    } else {
-      log_warning(os, thread)("Failed to start thread - pthread_create failed (%s) for attributes: %s.",
-        os::errno_name(ret), os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
-    }
-
+    
     pthread_attr_destroy(&attr);
 
     if (ret != 0) {
