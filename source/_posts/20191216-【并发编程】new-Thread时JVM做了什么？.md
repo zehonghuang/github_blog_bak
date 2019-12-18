@@ -134,7 +134,7 @@ JavaThread::JavaThread(ThreadFunction entry_point, size_t stack_sz) :
 }
 ```
 
-////////
+`create_thread`对线程属性的设置跟日常写c++时有些不同，包括警戒线缓冲区和页面对其，一般我们并不会考虑aligned。
 ``` c++
 //os_linux.cpp
 
@@ -197,7 +197,7 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
     // Store pthread info into the OSThread
     osthread->set_pthread_id(tid);
 
-    // Wait until child thread is either initialized or aborted
+    // 等待thread_native_entry设置osthread为INITIALIZED，或收到终止信号
     {
       Monitor* sync_with_child = osthread->startThread_lock();
       MutexLockerEx ml(sync_with_child, Mutex::_no_safepoint_check_flag);
@@ -206,15 +206,26 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
       }
     }
   }
+    // Aborted due to thread limit being reached
+  if (state == ZOMBIE) {
+    thread->set_osthread(NULL);
+    delete osthread;
+    return false;
+  }
+
+  // The thread is returned suspended (in state INITIALIZED),
+  // and is started higher up in the call chain
+  assert(state == INITIALIZED, "race condition");
+  return true;
+}
 ```
 
-//////
-
+由于`pthread_create`会立即执行`thread_native_entry`，但又因为JavaThread被OSThread管理着，所以需要加各种排斥锁，达到二者状态同步的效果。
 ``` c++
 static void *thread_native_entry(Thread *thread) {
 
   thread->record_stack_base_and_size();
-
+  //我没理解这里的左右，有CPU大佬请解答
   // Try to randomize the cache line index of hot stack frames.
   // This helps when threads of the same stack traces evict each other's
   // cache lines. The threads can be either from the same JVM instance, or
@@ -223,7 +234,7 @@ static void *thread_native_entry(Thread *thread) {
   static int counter = 0;
   int pid = os::current_process_id();
   alloca(((pid ^ counter++) & 7) * 128);
-
+  //声明类似ThreadLocal的pthread_key_t
   thread->initialize_thread_current();
 
   OSThread* osthread = thread->osthread();
@@ -231,22 +242,18 @@ static void *thread_native_entry(Thread *thread) {
 
   osthread->set_thread_id(os::current_thread_id());
 
-  log_info(os, thread)("Thread is alive (tid: " UINTX_FORMAT ", pthread id: " UINTX_FORMAT ").",
-    os::current_thread_id(), (uintx) pthread_self());
-
   if (UseNUMA) {
     int lgrp_id = os::numa_get_group_id();
     if (lgrp_id != -1) {
       thread->set_lgrp_id(lgrp_id);
     }
   }
-  // initialize signal mask for this thread
+  // 屏蔽来自VM的阻塞信号
   os::Linux::hotspot_sigmask(thread);
 
   // initialize floating point control register
   os::Linux::init_thread_fpu_state();
 
-  // handshaking with parent thread
   {
     MutexLockerEx ml(sync, Mutex::_no_safepoint_check_flag);
 
@@ -254,7 +261,7 @@ static void *thread_native_entry(Thread *thread) {
     osthread->set_state(INITIALIZED);
     sync->notify_all();
 
-    // wait until os::start_thread()
+    // wait until os::start_thread() <<<------  自璇中，等待调用Thread::start()
     while (osthread->get_state() == INITIALIZED) {
       sync->wait(Mutex::_no_safepoint_check_flag);
     }
@@ -263,29 +270,23 @@ static void *thread_native_entry(Thread *thread) {
   assert(osthread->pthread_id() != 0, "pthread_id was not set as expected");
 
   // call one more level start routine
-  thread->call_run();
+  thread->call_run(); // <--- 里面调用JavaThread::run()
 
   // Note: at this point the thread object may already have deleted itself.
   // Prevent dereferencing it from here on out.
   thread = NULL;
 
-  log_info(os, thread)("Thread finished (tid: " UINTX_FORMAT ", pthread id: " UINTX_FORMAT ").",
-    os::current_thread_id(), (uintx) pthread_self());
-
   return 0;
 }
 ```
 
+执行Runable之前，JVM需要给java线程分配本地缓冲区等操作(这是一个大块)，这里算是到头了。
 ``` c++
 void JavaThread::run() {
-  // initialize thread-local alloc buffer related fields
+  // 初始化TLAB，即在年轻代割一点空间给自己，具体大小-XX:UseTLAB设置
   this->initialize_tlab();
 
-  // Used to test validity of stack trace backs.
-  // This can't be moved into pre_run() else we invalidate
-  // the requirement that thread_main_inner is lower on
-  // the stack. Consequently all the initialization logic
-  // stays here in run() rather than pre_run().
+  //不知道干嘛的，在linux_x86是空实现
   this->record_base_of_stack_pointer();
 
   this->create_stack_guard_pages();
@@ -301,20 +302,21 @@ void JavaThread::run() {
 
   DTRACE_THREAD_PROBE(start, this);
 
-  // This operation might block. We call that after all safepoint checks for a new thread has
-  // been completed.
   this->set_active_handles(JNIHandleBlock::allocate_block());
 
   if (JvmtiExport::should_post_thread_life()) {
     JvmtiExport::post_thread_start(this);
 
   }
-
+  //这里才是真正调用java.lang.Thread#run()方法，执行Runable
   // We call another function to do the rest so we are sure that the stack addresses used
   // from there will be lower than the stack base just computed.
   thread_main_inner();
 }
+```
 
+下面代码不多做解释了，`this->entry_point()(this, this)` 等同于调用函数`thread_entry`，`JavaCalls`也是个大块，复杂调用java方法。
+``` c++
 void JavaThread::thread_main_inner() {
   assert(JavaThread::current() == this, "sanity check");
   assert(this->threadObj() != NULL, "just checking");
@@ -336,9 +338,7 @@ void JavaThread::thread_main_inner() {
 
   // Cleanup is handled in post_run()
 }
-```
 
-``` c++
 static void thread_entry(JavaThread* thread, TRAPS) {
   HandleMark hm(THREAD);
   Handle obj(THREAD, thread->threadObj());
@@ -351,3 +351,5 @@ static void thread_entry(JavaThread* thread, TRAPS) {
                           THREAD);
 }
 ```
+
+总体来说，创建一个线程对于JVM来说还是相对费劲的，不是说性能不好，是需要做太多事。与GC息息相关的两个点就是TLAB与ThreadSafePoint，其他则是对于java程序员透明的栈空间的分配(这里指的是虚拟内存地址)、线程状态管理。
