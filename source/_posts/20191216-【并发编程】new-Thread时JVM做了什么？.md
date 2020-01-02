@@ -3,7 +3,7 @@ title: 【Java并发】new Thread时JVM做了什么？
 date: 2019-12-11 11:48:28
 tags:
   - java
-  - C++
+  - C/C++
   - Thread
   - Linux编程
   - 并发编程
