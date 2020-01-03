@@ -152,19 +152,21 @@ int main(int argc, char **argv) {
     } else {
         serverLog(LL_WARNING, "Configuration loaded");
     }
-    
+
     // 管理守护线程的方式
     // service redis restart
     // systemctl start redis
     // 直接kill -9，redis会被重新拉起，以防误杀
     server.supervised = redisIsSupervised(server.supervised_mode);
-    int background = server.daemonize && !server.supervised;
-    if (background) daemonize();
+    int background = server.daemonize && !server.supervised; // 后台运行
+    if (background) daemonize(); // 调用setsid()，父子进程脱离
 
+    // 初始化socket、eventloop、定时器: 持久化任务、超时任务
+    // 初始化持久化进程通讯用的通道
     initServer();
     if (background || server.pidfile) createPidFile();
     redisSetProcTitle(argv[0]);
-    redisAsciiArt();
+    redisAsciiArt(); // 打印LOGO
     checkTcpBacklogSettings();
 
     if (!server.sentinel_mode) {
@@ -198,7 +200,17 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
 
+    // 依次做了
+    // 1、集群模式下，更新节点状态
+    // 2、清理过期Key-Value
+    // 3、向从库同步数据
+    // 4、主从同步时，会锁住客户端请求，并在这里释放锁
+    // 5、尝试执行被刮起的客户端命令
+    // 6、持久化AOF
+    // 7、处理被阻塞的向客户端写操作
+    // 8、释放拓展模块的全局锁
     aeSetBeforeSleepProc(server.el,beforeSleep);
+    // 获取拓展模块的全局锁
     aeSetAfterSleepProc(server.el,afterSleep);
     aeMain(server.el);
     aeDeleteEventLoop(server.el);
