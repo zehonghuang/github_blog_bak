@@ -8,9 +8,10 @@ tags:
     - Linux编程
 categories:
     - C/C++编程
+    - Redis
 ---
 
-面试总喜欢被问Redis是单线程还是多线程，千篇一律的回答单线程却不知所以然，严格来说Redis是多线程多进程、单线程处理请求，本文说的就是多线程下的后台IO。
+面试总喜欢被问Redis是单线程还是多线程，千篇一律的回答单线程却不知所以然，严格来说Redis是多线程多进程、单线程处理请求，本文说的就是多线程下的BIO(Background I/O service)。
 
 ---
 
@@ -18,37 +19,33 @@ categories:
 
 ``` cpp
 /* Background job opcodes */
-#define BIO_CLOSE_FILE    0 // close()
+#define BIO_CLOSE_FILE    0 // close()，重写aof，会关闭旧文件fd，具体实现可参考aof.c的backgroundRewriteDoneHandler()
 #define BIO_AOF_FSYNC     1 // fsync()
 #define BIO_LAZY_FREE     2 // 延迟释放
 #define BIO_NUM_OPS       3
 ```
 
-
+每种任务类型都有独立的队列、执行线程、互斥锁，每个任务执行完成并不会callback通知调用方。
 ``` cpp
 static pthread_t bio_threads[BIO_NUM_OPS];
 static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
 static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
 static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
 static list *bio_jobs[BIO_NUM_OPS];
-/* The following array is used to hold the number of pending jobs for every
- * OP type. This allows us to export the bioPendingJobsOfType() API that is
- * useful when the main thread wants to perform some operation that may involve
- * objects shared with the background thread. The main thread will just wait
- * that there are no longer jobs of this type to be executed before performing
- * the sensible operation. This data is also useful for reporting. */
+// 用于记录每个任务类型的任务数，假如主线程有与BIO共享的数据时，在主线程操作前，会等待直到队列不会有新的任务
+// 通常在aof同步以及延迟释放会用到
 static unsigned long long bio_pending[BIO_NUM_OPS];
 
 /* This structure represents a background Job. It is only used locally to this
  * file as the API does not expose the internals at all. */
 struct bio_job {
     time_t time; /* Time at which the job was created. */
-    /* Job specific arguments pointers. If we need to pass more than three
-     * arguments we can just pass a pointer to a structure or alike. */
+    // 多于三个参数可以传递指针or结构体
     void *arg1, *arg2, *arg3;
 };
 
 void *bioProcessBackgroundJobs(void *arg);
+// 下面三个方法实现均在lazyfree.c
 void lazyfreeFreeObjectFromBioThread(robj *o);
 void lazyfreeFreeDatabaseFromBioThread(dict *ht1, dict *ht2);
 void lazyfreeFreeSlotsMapFromBioThread(zskiplist *sl);
@@ -57,7 +54,7 @@ void lazyfreeFreeSlotsMapFromBioThread(zskiplist *sl);
  * main thread. */
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
 
-/* Initialize the background system, spawning the thread. */
+// 在server.c中InitServerLast()调用
 void bioInit(void) {
     pthread_attr_t attr;
     pthread_t thread;
@@ -73,16 +70,13 @@ void bioInit(void) {
         bio_pending[j] = 0;
     }
 
-    /* Set the stack size as by default it may be small in some system */
     pthread_attr_init(&attr);
     pthread_attr_getstacksize(&attr,&stacksize);
-    if (!stacksize) stacksize = 1; /* The world is full of Solaris Fixes */
+    if (!stacksize) stacksize = 1; // 不废话，至少4MB
     while (stacksize < REDIS_THREAD_STACK_SIZE) stacksize *= 2;
     pthread_attr_setstacksize(&attr, stacksize);
 
-    /* Ready to spawn our threads. We use the single argument the thread
-     * function accepts in order to pass the job ID the thread is
-     * responsible of. */
+    // just do it
     for (j = 0; j < BIO_NUM_OPS; j++) {
         void *arg = (void*)(unsigned long) j;
         if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
@@ -95,18 +89,10 @@ void bioInit(void) {
 
 void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     struct bio_job *job = zmalloc(sizeof(*job));
-
-    job->time = time(NULL);
-    job->arg1 = arg1;
-    job->arg2 = arg2;
-    job->arg3 = arg3;
-    pthread_mutex_lock(&bio_mutex[type]);
-    listAddNodeTail(bio_jobs[type],job);
-    bio_pending[type]++;
-    pthread_cond_signal(&bio_newjob_cond[type]);
-    pthread_mutex_unlock(&bio_mutex[type]);
+    // 省略
 }
 
+// 任务线程主体
 void *bioProcessBackgroundJobs(void *arg) {
     struct bio_job *job;
     unsigned long type = (unsigned long) arg;
@@ -119,14 +105,12 @@ void *bioProcessBackgroundJobs(void *arg) {
         return NULL;
     }
 
-    /* Make the thread killable at any time, so that bioKillThreads()
-     * can work reliably. */
+    // 响应bioKillThreads的调用
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL); // 意味着线程收到终止信号时，会立即取消
 
     pthread_mutex_lock(&bio_mutex[type]);
-    /* Block SIGALRM so we are sure that only the main thread will
-     * receive the watchdog signal. */
+    // 屏蔽SIGALRM定时器信号
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGALRM);
     if (pthread_sigmask(SIG_BLOCK, &sigset, NULL))
@@ -136,7 +120,7 @@ void *bioProcessBackgroundJobs(void *arg) {
     while(1) {
         listNode *ln;
 
-        /* The loop always starts with the lock hold. */
+        // 队列没有任务会一直hold着
         if (listLength(bio_jobs[type]) == 0) {
             pthread_cond_wait(&bio_newjob_cond[type],&bio_mutex[type]);
             continue;
@@ -144,15 +128,14 @@ void *bioProcessBackgroundJobs(void *arg) {
         /* Pop the job from the queue. */
         ln = listFirst(bio_jobs[type]);
         job = ln->value;
-        /* It is now possible to unlock the background system as we know have
-         * a stand alone job structure to process.*/
+        // 成功取出任务，则可以释放锁
         pthread_mutex_unlock(&bio_mutex[type]);
 
         /* Process the job accordingly to its type. */
         if (type == BIO_CLOSE_FILE) {
             close((long)job->arg1);
         } else if (type == BIO_AOF_FSYNC) {
-            redis_fsync((long)job->arg1);
+            redis_fsync((long)job->arg1); // syscall fsync
         } else if (type == BIO_LAZY_FREE) {
             /* What we free changes depending on what arguments are set:
              * arg1 -> free the object at pointer.
