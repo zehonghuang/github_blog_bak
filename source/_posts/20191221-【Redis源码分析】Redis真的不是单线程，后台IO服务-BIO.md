@@ -8,7 +8,6 @@ tags:
     - Linux编程
 categories:
     - C/C++编程
-    - Redis
 ---
 
 面试总喜欢被问Redis是单线程还是多线程，千篇一律的回答单线程却不知所以然，严格来说Redis是多线程多进程、单线程处理请求，本文说的就是多线程下的BIO(Background I/O service)。
@@ -137,20 +136,20 @@ void *bioProcessBackgroundJobs(void *arg) {
         } else if (type == BIO_AOF_FSYNC) {
             redis_fsync((long)job->arg1); // syscall fsync
         } else if (type == BIO_LAZY_FREE) {
-            /* What we free changes depending on what arguments are set:
-             * arg1 -> free the object at pointer.
-             * arg2 & arg3 -> free two dictionaries (a Redis DB).
-             * only arg3 -> free the skiplist. */
+            // 原注解意思，
+            // arg1为要释放的对象指针
+            // arg2、arg3为要释放的redis db指针
+            // arg3则是个跳表
             if (job->arg1)
-                lazyfreeFreeObjectFromBioThread(job->arg1);
+                lazyfreeFreeObjectFromBioThread(job->arg1); // 具体参数见：freeObjAsync
             else if (job->arg2 && job->arg3)
-                lazyfreeFreeDatabaseFromBioThread(job->arg2,job->arg3);
+                lazyfreeFreeDatabaseFromBioThread(job->arg2,job->arg3); // 具体参数见：emptyDbAsync
             else if (job->arg3)
-                lazyfreeFreeSlotsMapFromBioThread(job->arg3);
+                lazyfreeFreeSlotsMapFromBioThread(job->arg3); // 具体参数见：slotToKeyFlushAsync
         } else {
             serverPanic("Wrong job type in bioProcessBackgroundJobs().");
         }
-        zfree(job);
+        zfree(job); //执行完释放任务
 
         /* Lock again before reiterating the loop, if there are no longer
          * jobs to process we'll block again in pthread_cond_wait(). */
@@ -172,16 +171,7 @@ unsigned long long bioPendingJobsOfType(int type) {
     return val;
 }
 
-/* If there are pending jobs for the specified type, the function blocks
- * and waits that the next job was processed. Otherwise the function
- * does not block and returns ASAP.
- *
- * The function returns the number of jobs still to process of the
- * requested type.
- *
- * This function is useful when from another thread, we want to wait
- * a bio.c thread to do more work in a blocking way.
- */
+// 目前看来redis 5.0也没有用到该方法
 unsigned long long bioWaitStepOfType(int type) {
     unsigned long long val;
     pthread_mutex_lock(&bio_mutex[type]);
@@ -194,10 +184,7 @@ unsigned long long bioWaitStepOfType(int type) {
     return val;
 }
 
-/* Kill the running bio threads in an unclean way. This function should be
- * used only when it's critical to stop the threads for some reason.
- * Currently Redis does this only on crash (for instance on SIGSEGV) in order
- * to perform a fast memory check without other threads messing with memory. */
+// 只有在进程奔溃收到SIGSEGV信号，才会执行该方法
 void bioKillThreads(void) {
     int err, j;
 
